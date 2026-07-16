@@ -8,6 +8,7 @@ npm start
 ```
 ## 鸣谢
 hack.chat的开发者和贡献者
+
 ?lounge和?banana的大家
 
 ## 许可证
