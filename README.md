@@ -1,5 +1,5 @@
 # AmaOka 雨丘
-a hack.chat bot
+一个hack.chat机器人
 
 ## 快速开始
 ```javascript
