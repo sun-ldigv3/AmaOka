@@ -4,7 +4,7 @@
   "description": "a hack.chat bot",
   "main": "bot.js",
   "scripts": {
-    "start": "node bot.js"
+    "start": "node index.js"
   },
   "dependencies": {
     "ws": "^8.14.2",
