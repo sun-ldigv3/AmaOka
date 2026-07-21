@@ -2,7 +2,7 @@
   "name": "amaoka-bot",
   "version": "1.2.0",
   "description": "a hack.chat bot",
-  "main": "bot.js",
+  "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
