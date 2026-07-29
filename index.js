@@ -578,11 +578,11 @@ const bot = {
     },
 
     connectWS() {
-        if (this.isReconnecting) return;
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;
         }
+                this.inChannel = false;
         if (this.ws) {
             try {
                 this.ws.removeAllListeners();
@@ -621,7 +621,11 @@ const bot = {
                 );
                 this.reconnectAttempts++;
                 console.log(`[重连] ${delay/1000}s 后重试 (第${this.reconnectAttempts}次)`);
-                this.reconnectTimer = setTimeout(() => this.connectWS(), delay);
+                this.reconnectTimer = setTimeout(() => {
+                    this.reconnectTimer = null;
+                    this.isReconnecting = false; 
+                    this.connectWS();
+                }, delay);
             } else {
                 console.log(`[${CONFIG.botNick}] 停止`);
             }
@@ -853,11 +857,10 @@ const bot = {
                 }
             }
             this.onlineUsers = newMap;
-            const myFullNick = `${CONFIG.botNick}#${CONFIG.botTrip}`;
-            this.inChannel = this.onlineUsers.has(myFullNick);
-            if (this.inChannel) {
-                console.log(`[频道确认] 已成功加入 ${CONFIG.channel}`);
-            }
+            this.inChannel = Array.from(this.onlineUsers.keys()).some(nick => 
+                nick === CONFIG.botNick || nick.startsWith(CONFIG.botNick + '#')
+            );
+
         } catch (err) {
             console.error('[更新在线用户错误]', err);
         }
