@@ -12,4 +12,4 @@ hack.chat的开发者和贡献者
 lounge和programming以及banana的大家
 
 ## 许可证
-MIT License - 可自由修改和使用
+MIT License
