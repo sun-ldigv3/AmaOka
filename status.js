@@ -52,9 +52,15 @@ includeYiyan: true,
         historyKeepDays: 90,
         recentTimestampsMax: 1000,
         maxLogFiles: 30,
-        reconnectBaseDelay: 1000,
+        reconnectBaseDelay: 5000,
         reconnectMaxDelay: 60000,
         saveIntervalMs: 5000,
+        pingIntervalMs: 30000,
+        aliveTimeoutMs: 240000,
+        watchdogIntervalMs: 60000,
+        watchdogGraceMs: 30000,
+        minConnectionAliveMs: 60000,
+        afkAliveTimeoutMs: 240000,
         REPO: 'https://github.com/sun-ldigv3/AmaOka'
     }
 };
@@ -342,6 +348,10 @@ const bot = {
     hourlyTimeout: null,
     lastJoinTime: 0,
     lastPingMs: null,
+    lastAliveMs: Date.now(),
+    connectedAt: 0,
+    idleStrikes: 0,
+    _pingSentAt: 0,
 
     markDirty() {
         this.dirty = true;
