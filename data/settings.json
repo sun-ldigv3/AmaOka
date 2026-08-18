@@ -1,0 +1,19 @@
+{
+  "placeholder": "(｡•ᴗ•｡)",
+  "helpColumns": 6,
+  "showRepo": true,
+  "hourlyReminder": true,
+  "questionReply": true,
+  "opHint": true,
+  "includeYiyan": true,
+  "motdEnabled": false,
+  "motdLines": [],
+  "fakemotdEnabled": false,
+  "fakemotdContent": "",
+  "privateCmd": {
+    "normal": true,
+    "mod": true,
+    "admin": true
+  },
+  "historyKeepDays": 90
+}
