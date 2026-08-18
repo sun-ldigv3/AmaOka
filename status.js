@@ -138,6 +138,7 @@ const DATA_FILES = {
     votes: 'votes.json',
     whitelist: 'whitelist.json',
     tempban: 'tempban.json',
+    silence: 'silence.json',
     adminlog: 'adminlog.json',
     ignore: 'ignore.json',
     blacklist: 'blacklist.json',
@@ -373,6 +374,7 @@ const bot = {
                 store.set('votes', state.votes),
                 store.set('whitelist', state.whitelist),
                 store.set('tempban', state.tempban),
+                store.set('silence', state.silence),
                 store.set('adminlog', state.adminlog),
                 store.set('ignore', state.ignore),
                 store.set('blacklist', state.blacklist),
@@ -404,6 +406,7 @@ const bot = {
         store.setSync('votes', state.votes);
         store.setSync('whitelist', state.whitelist);
         store.setSync('tempban', state.tempban);
+        store.setSync('silence', state.silence);
         store.setSync('adminlog', state.adminlog);
         store.setSync('ignore', state.ignore);
         store.setSync('blacklist', state.blacklist);
@@ -434,6 +437,7 @@ const bot = {
             votes: votesObj,
             whitelist: [...this.whitelist],
             tempban: Object.fromEntries(this.tempbanned),
+            silence: [...this.silencedUsers.entries()].map(([k, v]) => [k, v === Infinity ? 'forever' : v]),
             adminlog: this.adminLogs.slice(-CONFIG.CONST.adminLogMax),
             ignore: [...this.ignoreList],
             blacklist: [...this.blackList],
@@ -490,7 +494,7 @@ const bot = {
         const rl = read('ratelimit', null);
         if (rl) {
             this.rl.setParams(rl.halflife, rl.threshold);
-            this.rl.setEnabled(rl.enabled);
+            if (typeof rl.enabled === 'boolean') this.rl.setEnabled(rl.enabled);
         }
         const slow = read('slowmode', null);
         if (slow) {
@@ -503,6 +507,7 @@ const bot = {
         this.votes = new Map(Object.entries(voteObj).map(([k, v]) => [k, { ...v, options: new Map(v.options || []), voters: new Set(v.voters || []) }]));
         this.whitelist = new Set(read('whitelist', []));
         this.tempbanned = new Map(Object.entries(read('tempban', {})));
+        this.silencedUsers = new Map(read('silence', []).map(([k, v]) => [k, v === 'forever' ? Infinity : Number(v)]));
         this.adminLogs = read('adminlog', []);
         this.ignoreList = new Set(read('ignore', []));
         this.blackList = new Set(read('blacklist', []));
