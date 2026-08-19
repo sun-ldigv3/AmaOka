@@ -1,7 +1,7 @@
 const fs = require('fs-extra');
 const path = require('path');
 const WebSocket = require('ws');
-const { CONFIG, ADMIN_ACTION, STAR, BOT_START_TIME, RateLimiter, BACKUP_DIR, HISTORY_DIR, store, bot } = require('./status');
+const { CONFIG, ADMIN_ACTION, STAR, BOT_START_TIME, RateLimiter, DATA_DIR, BACKUP_DIR, HISTORY_DIR, store, bot } = require('./status');
 const core = require('./core');
 const { AFKClient } = core;
 
@@ -40,7 +40,7 @@ const CMD_CONFIG = {
     vote: { trigger: ['vote'], desc: '投票系统', level: 'normal', params: '<子命令>', example: '!vote create 今晚吃什么' },
     topwords: { trigger: ['topwords'], desc: '热词统计', level: 'normal', params: '[数量]', example: '!topwords 10' },
     time: { trigger: ['time'], desc: '文学时钟', level: 'normal', params: '', example: '!time' },
-    setu: { trigger: ['setu'], desc: '随机涩图', level: 'normal', params: '[参数]', example: '!setu tag=阿瓦' },
+    setu: { trigger: ['setu'], desc: '随机涩图', level: 'normal', params: '[参数]', example: '!setu tag=BA' },
     kkme: { trigger: ['kkme'], desc: '踢出同识别码僵尸号', level: 'normal', params: '[昵称]', example: '!kkme', title: 'kick me' },
     // Mod 命令
     helpm: { trigger: ['helpm'], desc: '查询Mod命令详情', level: 'mod', params: '<命令名>', example: ';helpm kick' },
@@ -62,8 +62,8 @@ const CMD_CONFIG = {
     // Admin 命令
     helpadmin: { trigger: ['helpadmin'], desc: '查看管理员命令', level: 'admin', params: '[命令名]', example: '.helpadmin eval' },
     mod: { trigger: ['mod'], desc: '协管模式', level: 'admin', params: 'on|off', example: '.mod on' },
-    addmod: { trigger: ['addmod'], desc: '添加Mod', level: 'admin', params: '<tripcode>', example: '.addmod AAAA+BB' },
-    delmod: { trigger: ['delmod'], desc: '删除Mod', level: 'admin', params: '<tripcode>', example: '.delmod AAAA+BB' },
+    addmod: { trigger: ['addmod'], desc: '添加Mod', level: 'admin', params: '<tripcode>', example: '.addmod 000000' },
+    delmod: { trigger: ['delmod'], desc: '删除Mod', level: 'admin', params: '<tripcode>', example: '.delmod 000000' },
     prtt: { trigger: ['prtt'], desc: '绑定Nick与Trip', level: 'admin', params: '<nick> <trip>', example: '.prtt sun 2UE++I' },
     delp: { trigger: ['delp'], desc: '解绑Nick', level: 'admin', params: '<nick>', example: '.delp sun' },
     mute: { trigger: ['mute'], desc: '临时禁言', level: 'admin', params: '<用户> <分钟>', example: '.mute sun 5' },
@@ -73,7 +73,7 @@ const CMD_CONFIG = {
     unban: { trigger: ['unban'], desc: '解除封禁', level: 'admin', params: '<nick|trip|hash> <值>', example: '.unban nick sun' },
     tempban: { trigger: ['tempban'], desc: '临时封禁', level: 'admin', params: '<nick> <分钟>', example: '.tempban sun 5' },
     motd: { trigger: ['motd'], desc: '频道公告', level: 'admin', params: '<内容>|set <内容>|on|off|now', example: '.motd set 欢迎来到频道' },
-    fakemotd: { trigger: ['fakemotd'], desc: '加入时私信自定义内容', level: 'admin', params: '<内容>|set <内容>|on|off', example: '.fakemotd set 本频道公告如下' },
+    fmotd: { trigger: ['fmotd'], desc: '加入时私信自定义内容', level: 'admin', params: '<内容>', example: '.fmotd 本频道公告如下', title: 'fakemotd' },
     pann: { trigger: ['pann'], desc: '定时公告', level: 'admin', params: '<子命令>', example: '.pann add 60 喝水' },
     if: { trigger: ['if'], desc: '自动回复规则', level: 'admin', params: '<子命令>', example: '.if add 你好 你好呀 100' },
     talk: { trigger: ['talk'], desc: '发言开关', level: 'admin', params: 'on|off', example: '.talk off' },
@@ -81,8 +81,8 @@ const CMD_CONFIG = {
     v: { trigger: ['v'], desc: 'bot信息', level: 'admin', params: '', example: '.v' },
     status: { trigger: ['status'], desc: '运行时间', level: 'admin', params: '', example: '.status' },
     rl: { trigger: ['rl'], desc: '限流器管理', level: 'admin', params: '[子命令]', example: '.rl set 30 8' },
-    backup: { trigger: ['backup'], desc: '备份管理', level: 'admin', params: 'list|remove|clear', example: '.backup list' },
-    history: { trigger: ['history'], desc: '历史管理', level: 'admin', params: 'list|remove|clear|keep|keepmsg', example: '.history list' },
+    backup: { trigger: ['backup'], desc: '创建备份/管理备份', level: 'admin', params: '[无参数则创建]|list|remove|clear', example: '.backup' },
+    history: { trigger: ['history'], desc: '导出历史/历史管理', level: 'admin', params: '[无参数则导出]|list|remove|clear|keep|keepmsg', example: '.history' },
     cmd: { trigger: ['cmd'], desc: '设置命令等级', level: 'admin', params: '<命令> <normal|mod|admin|default>', example: '.cmd roll admin' },
     set: { trigger: ['set'], desc: '综合设置', level: 'admin', params: '<键> <值>', example: '.set placeholder (◍•ᴗ•◍)' },
     admin: { trigger: ['admin'], desc: '管理admin', level: 'admin', params: 'add|remove|list', example: '.admin list' },
@@ -216,6 +216,7 @@ const mainHandlers = {
         if (expire === Infinity) return true;
         if (expire > Date.now()) return true;
         this.silencedUsers.delete(nick);
+        this.markDirty();
         return false;
     },
 
@@ -260,12 +261,19 @@ const mainHandlers = {
                             if (cmdItem && cmdItem.level !== 'normal') return;
                         }
                     }
-                    if (this.isMuted && msg.text.trim() !== `${CONFIG.CONST.ADMIN_PREFIX}talk on`) return;
+                    if (this.isMuted) {
+                        const trimmed = msg.text.trim();
+                        const isTalkOn = trimmed === `${CONFIG.CONST.ADMIN_PREFIX}talk on`;
+                        const isCoreCmd = trimmed === `${CONFIG.CONST.ADMIN_PREFIX}core` || trimmed.startsWith(`${CONFIG.CONST.ADMIN_PREFIX}core `);
+                        if (!isTalkOn && !isCoreCmd) return;
+                    }
                     if (!this.isSilenced(msg.nick)) {
                         this.handleChatMessage(msg);
-                        this.checkIfRules(msg.text);
-                        this.tryRandomReply(msg);
-                        this.checkSubscriptions(msg.text, msg.nick, msg.trip);
+                        if (!this.coreMode) {
+                            this.checkIfRules(msg.text);
+                            this.tryRandomReply(msg);
+                            this.checkSubscriptions(msg.text, msg.nick, msg.trip);
+                        }
                     } else {
                         this.kickUser(msg.nick);
                     }
@@ -291,6 +299,7 @@ const mainHandlers = {
             const text = msg.text;
             const trip = msg.trip || '';
             if (typeof from === 'number') return;
+            if (this.isTempbanned(from) || this.isBlacklisted(from) || this.isBlacklisted(trip)) return;
             const nickPrefix = `${from} whispered: `;
             const cleanText = text.startsWith(nickPrefix) ? text.slice(nickPrefix.length) : text;
             const prefixes = [CONFIG.CONST.NORMAL_PREFIX, CONFIG.CONST.MOD_PREFIX, CONFIG.CONST.ADMIN_PREFIX];
@@ -321,23 +330,25 @@ const mainHandlers = {
                     joinTime: u.time ? u.time * 1000 : Date.now()
                 });
                 if (u.isme && typeof u.level === 'number') this.botLevel = u.level;
-                if (u.hash) {
-                    if (!this.hashHistory.has(u.hash)) this.hashHistory.set(u.hash, new Set());
-                    const nickSet = this.hashHistory.get(u.hash);
-                    const pureNick = u.nick.split('#')[0];
-                    nickSet.add(pureNick);
-                    if (pureNick !== u.nick) nickSet.add(u.nick);
-                    if (nickSet.size > CONFIG.CONST.maxHashNickCount) {
-                        const iter = nickSet.values();
-                        nickSet.delete(iter.next().value);
+                if (!this.coreMode) {
+                    if (u.hash) {
+                        if (!this.hashHistory.has(u.hash)) this.hashHistory.set(u.hash, new Set());
+                        const nickSet = this.hashHistory.get(u.hash);
+                        const pureNick = u.nick.split('#')[0];
+                        nickSet.add(pureNick);
+                        if (pureNick !== u.nick) nickSet.add(u.nick);
+                        if (nickSet.size > CONFIG.CONST.maxHashNickCount) {
+                            const iter = nickSet.values();
+                            nickSet.delete(iter.next().value);
+                        }
+                        this.markDirty();
                     }
-                    this.markDirty();
-                }
-                if (u.nick !== CONFIG.botNick && !this.userJoinTime.has(u.nick)) {
-                    this.userJoinTime.set(u.nick, u.time ? u.time * 1000 : Date.now());
-                }
-                if (u.nick !== CONFIG.botNick && u.color) {
-                    this.joinColor.set(u.nick, u.color);
+                    if (u.nick !== CONFIG.botNick && !this.userJoinTime.has(u.nick)) {
+                        this.userJoinTime.set(u.nick, u.time ? u.time * 1000 : Date.now());
+                    }
+                    if (u.nick !== CONFIG.botNick && u.color) {
+                        this.joinColor.set(u.nick, u.color);
+                    }
                 }
             }
             this.pruneHashHistory();
@@ -345,18 +356,6 @@ const mainHandlers = {
             this.inChannel = Array.from(this.onlineUsers.keys()).some(nick =>
                 nick === CONFIG.botNick || nick.startsWith(CONFIG.botNick + '#')
             );
-            if (this.pendingTransient) {
-                if (this.pendingTransient.phase === 'go' && data.channel === this.pendingTransient.channel) {
-                    this.handleTransientOnlineSet(data);
-                } else if (this.pendingTransient.phase === 'return' && data.channel === this.pendingTransient.origChannel) {
-                    if (this.transientTimer) clearTimeout(this.transientTimer);
-                    const t = this.pendingTransient;
-                    this.pendingTransient = null;
-                    if (t.result && t.customId) {
-                        this.sendWSMessage({ cmd: 'updateMessage', mode: 'overwrite', text: t.result, customId: t.customId }, true, true);
-                    }
-                }
-            }
         } catch (err) {
             console.error('[更新在线用户错误]', err);
         }
@@ -386,6 +385,7 @@ const mainHandlers = {
                 color: data.color || false,
                 joinTime: data.time * 1000
             });
+            if (this.coreMode) return;
             if (nick !== CONFIG.botNick && data.color) {
                 this.joinColor.set(nick, data.color);
             }
@@ -436,31 +436,34 @@ const mainHandlers = {
         try {
             const text = msg.text.trim();
             if (!text) return;
-            const isWhitelisted = this.isWhitelisted(msg.trip);
-            const isMod = this.hasModAuth(msg);
-            for (const word of this.banWords) {
-                try {
-                    if (new RegExp(word, 'i').test(text)) {
-                        this.kickUser(msg.nick);
-                        return;
-                    }
-                } catch(e) {}
-            }
-            if (!isWhitelisted && !isMod && this.rl.frisk(msg.nick, 1 + text.length/512)) {
-                this.kickUser(msg.nick);
-                return;
-            }
-            if (this.slowModeEnabled && !isWhitelisted && !isMod) {
-                const lastTime = this.lastUserMsgTime.get(msg.nick) || 0;
-                const elapsed = Date.now() - lastTime;
-                if (elapsed < this.slowModeInterval * 1000) {
-                    const remain = Math.ceil((this.slowModeInterval * 1000 - elapsed) / 1000);
-                    this.sendChat(`慢速模式中，请等待 ${remain} 秒再发言`);
+            if (!this.coreMode) {
+                const isWhitelisted = this.isWhitelisted(msg.trip);
+                const isMod = this.hasModAuth(msg);
+                for (const word of this.banWords) {
+                    try {
+                        if (new RegExp(word, 'i').test(text)) {
+                            this.kickUser(msg.nick);
+                            return;
+                        }
+                    } catch(e) {}
+                }
+                if (!isWhitelisted && !isMod && this.rl.frisk(msg.nick, 1 + text.length/512)) {
+                    this.kickUser(msg.nick);
                     return;
                 }
-                this.lastUserMsgTime.set(msg.nick, Date.now());
+                if (this.slowModeEnabled && !isWhitelisted && !isMod) {
+                    const lastTime = this.lastUserMsgTime.get(msg.nick) || 0;
+                    const elapsed = Date.now() - lastTime;
+                    if (elapsed < this.slowModeInterval * 1000) {
+                        const remain = Math.ceil((this.slowModeInterval * 1000 - elapsed) / 1000);
+                        this.sendChat(`慢速模式中，请等待 ${remain} 秒再发言`);
+                        return;
+                    }
+                    this.lastUserMsgTime.set(msg.nick, Date.now());
+                }
             }
             this.handleCommands(msg, text);
+            if (this.coreMode) return;
             this.handleAFKMention(msg);
             const firstToken = text.split(/\s+/)[0];
             const isAfkCmd = this.cmdMap.get(firstToken)?.key === 'afk';
@@ -501,7 +504,7 @@ const mainHandlers = {
             }
             this.markDirty();
             this.logMessage(`${msg.nick}: ${text}`);
-            if (!this.isMuted && this.questionReply && !text.startsWith(CONFIG.CONST.NORMAL_PREFIX) && /[？?]/.test(text)) {
+            if (!this.isMuted && this.questionReply && msg.nick !== CONFIG.botNick && !text.startsWith(CONFIG.CONST.NORMAL_PREFIX) && /[？?]/.test(text)) {
                 const now = Date.now();
                 if (!this.lastQuestionReplyTime || now - this.lastQuestionReplyTime > 5000) {
                     if (Math.random() <= 0.15) {
@@ -519,6 +522,7 @@ const mainHandlers = {
     recordMessage(msg) {
         try {
             if (msg.cmd !== 'chat') return;
+            if (this.coreMode) return;
             const nick = msg.nick;
             const trip = msg.trip || '';
             const hash = this.onlineUsers.get(nick)?.hash || msg.hash || '';
@@ -648,7 +652,7 @@ const mainHandlers = {
         this.scheduledIntervals.push(setInterval(() => this.checkTempbanExpire(), 60000));
         this.scheduleHourly();
         this.ifTimer = setInterval(() => {
-            if (this.isMuted) return;
+            if (this.isMuted || this.coreMode) return;
             for (const rule of this.ifRules) {
                 if (!rule.trigger && Math.random() <= rule.probability / 100) this.sendChat(rule.reply);
             }
@@ -662,7 +666,7 @@ const mainHandlers = {
         nextHour.setHours(now.getHours() + 1, 0, 0, 0);
         const delay = nextHour.getTime() - now.getTime();
         this.hourlyTimeout = setTimeout(() => {
-            if (!this.isMuted && this.hourlyReminder) {
+            if (!this.isMuted && !this.coreMode && this.hourlyReminder) {
                 const hour = this.getLocalTime().getHours();
                 const adText = (this.hourlyAds && this.hourlyAds.hours && this.hourlyAds.hours[hour]) || `${hour} 点了`;
                 if (this.hourlyAds && this.hourlyAds.enabled) {
@@ -672,7 +676,7 @@ const mainHandlers = {
                     this.sendChat(adText);
                 }
             }
-            if (!this.isMuted && this.motdEnabled) {
+            if (!this.isMuted && !this.coreMode && this.motdEnabled) {
                 this.pushMotd();
             }
             this.scheduleHourly();
@@ -683,7 +687,7 @@ const mainHandlers = {
         if (this.periodicTimeoutId) clearTimeout(this.periodicTimeoutId);
         const delay = 10 * 60 * 1000;
         this.periodicTimeoutId = setTimeout(() => {
-            if (!this.isMuted) {
+            if (!this.isMuted && !this.coreMode) {
                 const now = Date.now();
                 for (const ann of this.scheduledAnnouncements) {
                     if (now - ann.lastSendTime >= ann.interval * 60 * 1000) {
@@ -707,9 +711,14 @@ const mainHandlers = {
     checkMuteExpire() {
         try {
             const now = Date.now();
+            let changed = false;
             for (const [user, expire] of this.silencedUsers.entries()) {
-                if (expire !== Infinity && expire < now) this.silencedUsers.delete(user);
+                if (expire !== Infinity && expire < now) {
+                    this.silencedUsers.delete(user);
+                    changed = true;
+                }
             }
+            if (changed) this.markDirty();
         } catch (err) {}
     },
 
@@ -728,25 +737,40 @@ const mainHandlers = {
     startMemoryCleaner() {
         this.memoryCleanerId = setInterval(() => {
             try {
+                let changed = false;
                 const expireTime = Date.now() - CONFIG.CONST.timestampExpireHours * 3600 * 1000;
+                const beforeTs = this.recentMsgTimestamps.length;
                 this.recentMsgTimestamps = this.recentMsgTimestamps.filter(ts => ts >= expireTime);
+                if (this.recentMsgTimestamps.length !== beforeTs) changed = true;
                 const activeUsers = new Set(this.messageHistory.slice(-1000).map(m => m.nick));
                 for (const [user] of this.userActivity.entries()) {
-                    if (!activeUsers.has(user)) this.userActivity.delete(user);
+                    if (!activeUsers.has(user)) { this.userActivity.delete(user); changed = true; }
                 }
                 const weekAgo = Date.now() - 7 * 24 * 3600 * 1000;
                 for (const [key, val] of this.lastSeen.entries()) {
-                    if (val.time < weekAgo) this.lastSeen.delete(key);
+                    if (val.time < weekAgo) { this.lastSeen.delete(key); changed = true; }
                 }
                 const afkExpire = Date.now() - CONFIG.CONST.userActivityExpireHours * 3600 * 1000;
                 for (const [user, afkData] of this.afkUsers.entries()) {
-                    if (afkData.time < afkExpire) this.afkUsers.delete(user);
+                    if (afkData.time < afkExpire) { this.afkUsers.delete(user); changed = true; }
                 }
-                if (this.historyKeepMsgDays > 0) this.cleanOldMessages();
-                if (this.cleanExpiredLeftMessages) this.cleanExpiredLeftMessages();
-                if (this.cleanOldHistory) this.cleanOldHistory();
-                if (this.pruneHashHistory) this.pruneHashHistory();
-                this.markDirty();
+                if (this.historyKeepMsgDays > 0) {
+                    const hBefore = this.messageHistory.length;
+                    this.cleanOldMessages();
+                    if (this.messageHistory.length !== hBefore) changed = true;
+                }
+                {
+                    const lBefore = this.leftMessages.length;
+                    this.cleanExpiredLeftMessages();
+                    if (this.leftMessages.length !== lBefore) changed = true;
+                }
+                this.cleanOldHistory();
+                {
+                    const hkBefore = this.hashHistory.size;
+                    this.pruneHashHistory();
+                    if (this.hashHistory.size !== hkBefore) changed = true;
+                }
+                if (changed) this.markDirty();
             } catch (err) {}
         }, 3600 * 1000);
     },
@@ -790,7 +814,7 @@ const mainHandlers = {
             const cmdItem = this.cmdMap.get(cmdTrigger);
             if (!cmdItem) return;
             if (msg._whisper && this.privateCmd && this.privateCmd[cmdItem.level] === 'off') return;
-            if (this.coreMode && cmdItem.key !== 'eval' && cmdItem.key !== 'core') return;
+            if (this.coreMode && cmdItem.key !== 'core') return;
             if (cmdItem.level === 'admin' && !this.hasAdminAuth(msg)) {
                 this.sendChat('无权限，仅管理员可执行');
                 return;
@@ -807,6 +831,8 @@ const mainHandlers = {
     },
 
     setupErrorHandlers() {
+        if (this._errorHandlersInstalled) return;
+        this._errorHandlersInstalled = true;
         process.on('uncaughtException', (err) => {
             console.error('[未捕获异常]', err);
             if (this.logMessage) {
@@ -832,8 +858,6 @@ const mainHandlers = {
         if (this.saveTimer) clearInterval(this.saveTimer);
         if (this.selfMuteTimer) clearTimeout(this.selfMuteTimer);
         if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-        if (this.transientTimer) clearTimeout(this.transientTimer);
-        if (this.pendingTransient) this.pendingTransient = null;
         for (const c of this.afkmeClients.values()) c.close();
         this.afkmeClients.clear();
         if (this.logStream) {
@@ -1080,7 +1104,7 @@ const mainHandlers = {
             }
             const trip = info.trip || '无';
             const afk = this.afkUsers.has(target) ? '是' : '否';
-            const mod = this.modList.has(info.trip) || info.trip === CONFIG.CONST.ADMIN_TRIPCODE ? '是' : '否';
+            const mod = this.modList.has(info.trip) || this.hasAdminAuth({ trip: info.trip }) ? '是' : '否';
             this.sendChat(`**${target}** | trip: ${trip} | 在线: 是 | afk: ${afk} | mod: ${mod}`);
         } catch (err) {
             this.sendChat('查询用户失败');
@@ -1099,10 +1123,15 @@ const mainHandlers = {
         }
     },
 
+    exportHistory() {
+        const filename = `hackchat_${CONFIG.channel}_${new Date().toISOString().slice(0,10)}.json`;
+        store.writeFileSync(`history/${filename}`, this.messageHistory);
+        return filename;
+    },
+
     handleSave(msg) {
         try {
-            const filename = `hackchat_${CONFIG.channel}_${new Date().toISOString().slice(0,10)}.json`;
-            store.writeFileSync(`history/${filename}`, this.messageHistory);
+            const filename = this.exportHistory();
             this.sendChat(`导出到 data/history/${filename}`);
         } catch(e) {
             this.sendChat('导出失败');
@@ -1114,7 +1143,10 @@ const mainHandlers = {
             this.messageHistory = [];
             this.messageIdMap.clear();
             this.nextMessageId = 1;
-            this.sendChat('本地历史已清空');
+            for (const f of store.listFiles('history')) {
+                try { fs.unlinkSync(path.join(HISTORY_DIR, f)); } catch (e) {}
+            }
+            this.sendChat('本地历史已清空（含历史文件）');
         } catch (err) {
             this.sendChat('清空失败');
         }
@@ -1129,7 +1161,7 @@ const mainHandlers = {
             }
             if (expr.length > 100 || !/^[0-9\+\-\*\/\(\)\.\s]+$/.test(expr)) throw new Error();
             const res = eval(expr);
-            this.sendChat(`==${expr}== = ${isNaN(res) ? '无效' : res}`);
+            this.sendChat(`==${expr}== = ${isNaN(res) || !isFinite(res) ? '无效' : res}`);
         } catch(e) {
             this.sendChat('计算失败');
         }
@@ -1355,14 +1387,14 @@ const mainHandlers = {
                 if (this.welcomeMessages.has(trip)) {
                     this.welcomeMessages.delete(trip);
                     this.markDirty();
-                    this.sendWhisper(msg.nick, '已取消自定义欢迎语，将使用默认欢迎语');
+                    this.sendChat('已取消');
                 } else {
                     this.sendWhisper(msg.nick, '未设置自定义欢迎语');
                 }
             } else {
                 this.welcomeMessages.set(trip, text);
                 this.markDirty();
-                this.sendWhisper(msg.nick, `欢迎语已设置：${text}`);
+                this.sendChat('设置成功');
             }
         } catch (err) {
             this.sendWhisper(msg.nick, '设置失败');
@@ -1465,7 +1497,7 @@ const mainHandlers = {
                 this.sendChat(`无 ${target} 的数据`);
                 return;
             }
-            let text = `**${target}**\n在线：${online ? '是' : '否'}\n`;
+            let text = `**${target}**\n`;
             if (joinTime) {
                 const joinDate = new Date(joinTime);
                 const joinedAgo = Date.now() - joinTime;
@@ -2082,7 +2114,7 @@ const timeStr = (ts) => {
                 return;
             }
             const from = msg.trip ? `${msg.nick}#${msg.trip}` : msg.nick;
-            const text = `来自 ${CONFIG.channel} 的 ${from}：${content}`;
+            const text = `来自 ?${CONFIG.channel} 的 ${from}：${content}`;
             this.probeSendMessage(channel, text, (err, count) => {
                 if (err) {
                     this.sendChat(`发送失败：${err}`);
@@ -2149,12 +2181,13 @@ const timeStr = (ts) => {
                     this.motdLines = [];
                     this.motdEnabled = false;
                     this.markDirty();
-                    this.sendChat('频道公告已取消');
+                    this.sendChat('已取消');
                     return;
                 }
-                this.motdLines = content.replace(/\\n/g, '\n').split('\n').filter(l => l.trim() !== '' || true);
+                this.motdLines = content.replace(/\\n/g, '\n').split('\n');
+                this.motdEnabled = true;
                 this.markDirty();
-                this.sendChat('已设置频道公告基础内容');
+                this.sendChat('设置成功');
             } else if (sub === 'on') {
                 this.motdEnabled = true;
                 this.markDirty();
@@ -2170,49 +2203,31 @@ const timeStr = (ts) => {
                 this.motdLines = [];
                 this.motdEnabled = false;
                 this.markDirty();
-                this.sendChat('频道公告已取消');
+                this.sendChat('已取消');
             } else {
-                this.motdLines = params.join(' ').replace(/\\n/g, '\n').split('\n').filter(l => l.trim() !== '' || true);
+                this.motdLines = params.join(' ').replace(/\\n/g, '\n').split('\n');
+                this.motdEnabled = true;
                 this.markDirty();
-                this.sendChat('已设置频道公告基础内容');
+                this.sendChat('设置成功');
             }
         } catch (err) {
             this.sendChat('motd 操作失败');
         }
     },
 
-    handleFakemotd(msg, params) {
+    handleFmotd(msg, params) {
         try {
-            const sub = params[0] || '';
-            if (sub === 'set') {
-                const content = params.slice(1).join(' ').trim();
-                if (!content) {
-                    this.fakemotdContent = '';
-                    this.fakemotdEnabled = false;
-                    this.markDirty();
-                    this.sendChat('加入提示已取消');
-                    return;
-                }
+            const content = params.join(' ').trim();
+            if (content) {
                 this.fakemotdContent = content.replace(/\\n/g, '\n');
-                this.markDirty();
-                this.sendChat('已设置加入提示内容');
-            } else if (sub === 'on') {
                 this.fakemotdEnabled = true;
                 this.markDirty();
-                this.sendChat('加入提示已开启');
-            } else if (sub === 'off') {
-                this.fakemotdEnabled = false;
-                this.markDirty();
-                this.sendChat('加入提示已关闭');
-            } else if (!sub) {
+                this.sendChat('设置成功');
+            } else {
                 this.fakemotdContent = '';
                 this.fakemotdEnabled = false;
                 this.markDirty();
-                this.sendChat('加入提示已取消');
-            } else {
-                this.fakemotdContent = params.join(' ').replace(/\\n/g, '\n');
-                this.markDirty();
-                this.sendChat('已设置加入提示内容');
+                this.sendChat('已取消');
             }
         } catch (err) {
             this.sendChat('fakemotd 操作失败');
@@ -2253,46 +2268,6 @@ const timeStr = (ts) => {
         if (this.serverModWarn('setmotd')) return;
         this.sendWSMessage({ cmd: 'setmotd', motd: this.buildMotd() }, true, true);
         if (this.opHint) this.sendChat('频道公告已推送');
-    },
-
-    startTransient(msg, type, channel, customId) {
-        if (this.pendingTransient) {
-            this.sendChat('已有频道操作进行中，请稍候');
-            return;
-        }
-        this.pendingTransient = { type, channel, nick: msg.nick, origChannel: CONFIG.channel, time: Date.now(), phase: 'go', customId: customId || null };
-        if (this.transientTimer) clearTimeout(this.transientTimer);
-        this.transientTimer = setTimeout(() => {
-            if (this.pendingTransient) {
-                const t = this.pendingTransient;
-                if (t.phase === 'go') {
-                    t.result = t.result || '频道操作超时，已取消';
-                    this.sendWSMessage({ cmd: 'join', channel: t.origChannel, nick: this.botNickWithTrip(), clientId: this.clientId }, true, true);
-                } else {
-                    this.pendingTransient = null;
-                }
-            }
-        }, 20000);
-        this.sendWSMessage({ cmd: 'leave', channel: CONFIG.channel }, true, true);
-        setTimeout(() => {
-            if (!this.pendingTransient) return;
-            this.sendWSMessage({ cmd: 'join', channel, nick: this.botNickWithTrip(), clientId: this.clientId }, true, true);
-        }, 300);
-    },
-
-    handleTransientOnlineSet(data) {
-        const t = this.pendingTransient;
-        if (!t || t.phase !== 'go' || data.channel !== t.channel) return;
-        if (t.type === 'sendmsg') {
-            this.sendChat(this.transientMessage, true);
-            this.transientMessage = null;
-        }
-        t.phase = 'return';
-        this.sendWSMessage({ cmd: 'leave', channel: t.channel }, true, true);
-        setTimeout(() => {
-            if (this.pendingTransient !== t) return;
-            this.sendWSMessage({ cmd: 'join', channel: t.origChannel, nick: this.botNickWithTrip(), clientId: this.clientId }, true, true);
-        }, 300);
     },
 
     serverModWarn(cmdName) {
@@ -2396,9 +2371,9 @@ const timeStr = (ts) => {
             }
             const action = params[0].toLowerCase();
             if (action === 'on') {
-                const sec = parseInt(params[1]) || CONFIG.CONST.slowModeDefault;
-                if (sec < 1 || sec > 60) {
-                    this.sendChat('间隔须在 1~60 秒之间');
+                const sec = params[1] === undefined || params[1] === '' ? CONFIG.CONST.slowModeDefault : parseInt(params[1]);
+                if (isNaN(sec) || sec < 0 || sec > 60) {
+                    this.sendChat('间隔须在 0~60 秒之间');
                     return;
                 }
                 this.slowModeEnabled = true;
@@ -2575,6 +2550,7 @@ const timeStr = (ts) => {
                 return;
             }
             this.silencedUsers.set(target, Date.now() + minutes * 60000);
+            this.markDirty();
             this.sendChat(`${target} 已被禁言${minutes}分钟 ${ADMIN_ACTION}`);
             this.addAdminLog('mute', target, msg.trip);
         } catch (err) {
@@ -2597,6 +2573,7 @@ const timeStr = (ts) => {
                 this.silencedUsers.set(target, Infinity);
                 this.sendChat(`${target} 已被永久禁言 ${ADMIN_ACTION}`);
             }
+            this.markDirty();
             this.addAdminLog('silence', target, msg.trip);
         } catch (err) {
             this.sendChat('禁言失败');
@@ -2611,6 +2588,7 @@ const timeStr = (ts) => {
                 return;
             }
             if (this.silencedUsers.delete(target)) {
+                this.markDirty();
                 this.sendChat(`${target} 禁言已解除`);
                 this.addAdminLog('unsilence', target, msg.trip);
             } else {
@@ -2810,6 +2788,10 @@ const timeStr = (ts) => {
                         this.sendChat('格式：.if add [触发词] [回复] <概率> 或 .if add <触发词> <回复> <概率>');
                         return;
                     }
+                    if (!trigger && !braceMatch) {
+                        this.sendChat('空触发必须使用 [] 格式：.if add [] [回复] <概率>');
+                        return;
+                    }
                     this.ifRules.push({ trigger, reply, probability: prob, isRegex: false, id: Date.now() });
                     this.markDirty();
                     this.sendChat(`已添加：[${trigger || '空'}] -> [${reply}] (${prob}%)`);
@@ -2834,6 +2816,10 @@ const timeStr = (ts) => {
                     }
                     if (!replyZ) {
                         this.sendChat('格式：.if addz [正则] [回复] <概率> 或 .if addz <正则> <回复> <概率>');
+                        return;
+                    }
+                    if (!regex) {
+                        this.sendChat('正则不能为空：.if addz [正则] [回复] <概率>');
                         return;
                     }
                     this.ifRules.push({ trigger: regex, reply: replyZ, probability: probZ, isRegex: true, id: Date.now() });
@@ -3009,7 +2995,15 @@ const timeStr = (ts) => {
 
     handleBackup(msg, params) {
         try {
-            const sub = (params[0] || 'list').toLowerCase();
+            if (!params.length) {
+                const now = this.getLocalTime();
+                const pad = (n) => String(n).padStart(2, '0');
+                const filename = `backup_${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}.json`;
+                store.writeFileSync(`backup/${filename}`, this.exportState());
+                this.sendChat(`已创建备份 data/backup/${filename}`);
+                return;
+            }
+            const sub = params[0].toLowerCase();
             if (sub === 'list') {
                 const files = store.listFiles('backup').sort();
                 if (!files.length) { this.sendChat('暂无备份'); return; }
@@ -3031,7 +3025,7 @@ const timeStr = (ts) => {
                 }
                 this.sendChat('已清空备份');
             } else {
-                this.sendChat('格式：.backup list|remove|clear');
+                this.sendChat('格式：.backup [无参数=创建]|list|remove|clear');
             }
         } catch (err) {
             this.sendChat('备份操作失败');
@@ -3040,7 +3034,12 @@ const timeStr = (ts) => {
 
     handleHistory(msg, params) {
         try {
-            const sub = (params[0] || 'list').toLowerCase();
+            if (!params.length) {
+                const filename = this.exportHistory();
+                this.sendChat(`已导出历史到 data/history/${filename}`);
+                return;
+            }
+            const sub = params[0].toLowerCase();
             if (sub === 'list') {
                 const files = store.listFiles('history').sort();
                 if (!files.length) { this.sendChat('暂无历史文件'); return; }
@@ -3069,14 +3068,21 @@ const timeStr = (ts) => {
                 this.cleanOldHistory();
                 this.sendChat(`历史文件保留天数已设为 ${days} 天`);
             } else if (sub === 'keepmsg') {
+                const arg = (params[1] || '').toLowerCase();
+                if (arg === 'off' || arg === '0') {
+                    this.historyKeepMsgDays = 0;
+                    this.markDirty();
+                    this.sendChat('本地历史自动清理已关闭');
+                    return;
+                }
                 const days = parseInt(params[1]);
-                if (isNaN(days) || days < 1) { this.sendChat('格式：.history keepmsg <天数>'); return; }
+                if (isNaN(days) || days < 1) { this.sendChat('格式：.history keepmsg <天数> 或 .history keepmsg off'); return; }
                 this.historyKeepMsgDays = days;
                 this.markDirty();
                 this.cleanOldMessages();
                 this.sendChat(`本地历史消息超过 ${days} 天将自动清理`);
             } else {
-                this.sendChat('格式：.history list|remove|clear|keep|keepmsg');
+                this.sendChat('格式：.history [无参数=导出]|list|remove|clear|keep|keepmsg');
             }
         } catch (err) {
             this.sendChat('历史操作失败');
@@ -3388,7 +3394,7 @@ const timeStr = (ts) => {
             }
             this.coreMode = action === 'on';
             this.markDirty();
-            this.sendChat(`内核模式已${this.coreMode ? '开启' : '关闭'}${this.coreMode ? '' : ''}`);
+            this.sendChat(`内核模式已${this.coreMode ? '开启（仅保持连接，暂停计算与记录数据）' : '关闭'}`);
         } catch (err) {
             this.sendChat('内核模式切换失败');
         }
@@ -3556,19 +3562,23 @@ const timeStr = (ts) => {
                 return;
             }
             if (arg === 'all') {
-                let content = params[1] === 'set' ? params.slice(2).join(' ') : params.slice(1).join(' ');
-                if (!content.trim()) {
-                    this.sendChat('格式：.ads all <内容> 或 .ads all set <广告内容>');
+                const isSet = params[1] === 'set';
+                const content = (isSet ? params.slice(2).join(' ') : params.slice(1).join(' ')).trim();
+                if (!content) {
+                    const target = isSet ? this.hourlyAds.ads : this.hourlyAds.hours;
+                    for (const h of Object.keys(target)) delete target[h];
+                    this.markDirty();
+                    this.sendChat(`已清除所有整点${isSet ? '广告' : '报时'}`);
                     return;
                 }
-                if (params[1] === 'set') {
-                    for (let h = 0; h < 24; h++) this.hourlyAds.ads[h] = content.trim();
+                if (isSet) {
+                    for (let h = 0; h < 24; h++) this.hourlyAds.ads[h] = content;
                     this.markDirty();
-                    this.sendChat(`已设置所有整点广告：${content.trim()}`);
+                    this.sendChat(`已设置所有整点广告：${content}`);
                 } else {
-                    for (let h = 0; h < 24; h++) this.hourlyAds.hours[h] = content.trim();
+                    for (let h = 0; h < 24; h++) this.hourlyAds.hours[h] = content;
                     this.markDirty();
-                    this.sendChat(`已设置所有整点报时：${content.trim()}`);
+                    this.sendChat(`已设置所有整点报时：${content}`);
                 }
                 return;
             }
@@ -3577,19 +3587,27 @@ const timeStr = (ts) => {
                 this.sendChat('格式：.ads on|off|<0-23> <内容>|all <内容>');
                 return;
             }
-            let content = params[1] === 'set' ? params.slice(2).join(' ') : params.slice(1).join(' ');
-            if (!content.trim()) {
-                this.sendChat('格式：.ads <小时> <报时内容> 或 .ads <小时> set <广告内容>');
+            const isSet = params[1] === 'set';
+            const content = (isSet ? params.slice(2).join(' ') : params.slice(1).join(' ')).trim();
+            if (!content) {
+                const target = isSet ? this.hourlyAds.ads : this.hourlyAds.hours;
+                if (target[hour] !== undefined) {
+                    delete target[hour];
+                    this.markDirty();
+                    this.sendChat(`已清除 ${hour} 点的${isSet ? '广告' : '报时'}`);
+                } else {
+                    this.sendChat(`${hour} 点未设置${isSet ? '广告' : '报时'}`);
+                }
                 return;
             }
-            if (params[1] === 'set') {
-                this.hourlyAds.ads[hour] = content.trim();
+            if (isSet) {
+                this.hourlyAds.ads[hour] = content;
                 this.markDirty();
-                this.sendChat(`已设置 ${hour} 点的广告：${content.trim()}`);
+                this.sendChat(`已设置 ${hour} 点的广告：${content}`);
             } else {
-                this.hourlyAds.hours[hour] = content.trim();
+                this.hourlyAds.hours[hour] = content;
                 this.markDirty();
-                this.sendChat(`已设置 ${hour} 点的报时：${content.trim()}`);
+                this.sendChat(`已设置 ${hour} 点的报时：${content}`);
             }
         } catch (err) {
             this.sendChat('ads 操作失败');
@@ -3618,6 +3636,7 @@ const timeStr = (ts) => {
 
     handleDataclear(msg) {
         try {
+            const keepAdmin = new Set(this.adminList);
             this.onlineUsers.clear();
             this.userActivity.clear();
             this.userJoinTime.clear();
@@ -3631,16 +3650,19 @@ const timeStr = (ts) => {
             this.scheduledAnnouncements = [];
             this.hashHistory.clear();
             this.welcomeMessages.clear();
+            this.globalWelcome = [];
+            this.welcomeEnabled = true;
             this.lastSeen.clear();
             this.banWords = [];
             this.modList.clear();
+            this.modMode = false;
             this.leftMessages = [];
             this.nickTripBinding.clear();
-            this.modMode = false;
             this.isMuted = false;
             this.randomEnabled = false;
             this.randomProb = 0;
-            this.rl = new RateLimiter(30, 13);
+            this.rl = new RateLimiter(30, 8);
+            this.lastUserMsgTime.clear();
             this.subscriptions.clear();
             this.votes.clear();
             this.tempbanned.clear();
@@ -3650,6 +3672,39 @@ const timeStr = (ts) => {
             this.blackList.clear();
             this.ignoreList.clear();
             this.joinColor.clear();
+            this.lastUserColor.clear();
+            this.placeholder = '(｡•ᴗ•｡)';
+            this.helpColumns = 6;
+            this.showRepo = true;
+            this.hourlyReminder = true;
+            this.questionReply = true;
+            this.opHint = true;
+            this.includeYiyan = true;
+            this.coreMode = false;
+            this.motdEnabled = false;
+            this.motdLines = [];
+            this.fakemotdEnabled = false;
+            this.fakemotdContent = '';
+            this.privateCmd = { normal: 'on', mod: 'on', admin: 'on' };
+            this.historyKeepDays = 90;
+            this.historyKeepMsgDays = 0;
+            this.hourlyAds = { enabled: true, hours: {}, ads: {} };
+            this.afkme = [];
+            for (const c of this.afkmeClients.values()) c.close();
+            this.afkmeClients.clear();
+            this.adminList = keepAdmin;
+            for (const f of fs.readdirSync(DATA_DIR)) {
+                const fp = path.join(DATA_DIR, f);
+                if (fs.statSync(fp).isFile() && f.endsWith('.json')) {
+                    try { fs.unlinkSync(fp); } catch (e) {}
+                }
+            }
+            for (const f of store.listFiles('history')) {
+                try { fs.unlinkSync(path.join(HISTORY_DIR, f)); } catch (e) {}
+            }
+            for (const f of store.listFiles('backup')) {
+                try { fs.unlinkSync(path.join(BACKUP_DIR, f)); } catch (e) {}
+            }
             this.markDirty();
             this.sendChat('所有数据已清空');
         } catch (err) {
@@ -3691,11 +3746,4 @@ process.on('SIGTERM', () => {
 
 process.on('exit', () => {
     bot.cleanup();
-});
-
-process.on('uncaughtException', (err) => {
-    console.error('[未捕获异常]', err);
-    if (bot.logMessage) {
-        try { bot.logMessage(`UNCAUGHT EXCEPTION: ${err.stack}`); } catch(e) {}
-    }
 });
