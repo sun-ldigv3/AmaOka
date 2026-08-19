@@ -525,8 +525,8 @@ const bot = {
         this.nickTripBinding = new Map(Object.entries(read('bindings', {})));
         const settings = read('settings', null);
         if (settings) {
-            if (settings.placeholder) this.placeholder = settings.placeholder;
-            if (settings.helpColumns) this.helpColumns = settings.helpColumns;
+            if (settings.placeholder !== undefined) this.placeholder = settings.placeholder;
+            if (typeof settings.helpColumns === 'number') this.helpColumns = settings.helpColumns;
             if (typeof settings.showRepo === 'boolean') this.showRepo = settings.showRepo;
             if (typeof settings.hourlyReminder === 'boolean') this.hourlyReminder = settings.hourlyReminder;
             if (typeof settings.questionReply === 'boolean') this.questionReply = settings.questionReply;
@@ -574,7 +574,7 @@ const bot = {
         try {
             const cutoff = Date.now() - this.historyKeepDays * 24 * 3600 * 1000;
             for (const f of store.listFiles('history')) {
-                const m = /^history_(\d{4}-\d{2}-\d{2})\.json$/.exec(f);
+                const m = /^(?:history_|hackchat_.*_)(\d{4}-\d{2}-\d{2})\.json$/.exec(f);
                 if (!m) continue;
                 const d = new Date(m[1] + 'T00:00:00').getTime();
                 if (d < cutoff) {
@@ -672,6 +672,8 @@ const bot = {
             store.setSync('blacklist', parse('bot_blackList', []));
             store.setSync('left', parse('bot_leftMessages', []));
             store.setSync('bindings', parse('bot_nickTripBinding', {}));
+            store.setSync('settings', parse('bot_settings', null));
+            store.setSync('admin', parse('bot_adminList', []));
             fs.renameSync(oldPath, oldPath + '.bak');
         } catch (err) {
             console.error('[迁移失败]', err);
