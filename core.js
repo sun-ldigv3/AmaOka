@@ -139,7 +139,7 @@ module.exports = {
 
     handleOfficialCommands(msg) {
         try {
-            if (msg.channel && msg.channel !== CONFIG.channel && this.inChannel && !this.pendingTransient) {
+            if (msg.channel && msg.channel !== CONFIG.channel && this.inChannel) {
                 console.log(`[被踢] 频道变为 ${msg.channel}，重连回 ${CONFIG.channel}`);
                 this.inChannel = false;
                 if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
