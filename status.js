@@ -76,6 +76,7 @@ class RateLimiter {
         this.threshold = threshold;
         this.records = new Map();
         this.enabled = true;
+        this._lastCleanup = Date.now();
     }
     fscore(score, lastTime, delta = 1) {
         score *= Math.pow(2, (lastTime - Date.now()) / (this.halflife * 1000));
@@ -83,12 +84,22 @@ class RateLimiter {
     }
     frisk(name, delta) {
         if (!this.enabled) return false;
+        this._cleanup();
         let record = this.records.get(name);
         if (!record) record = { score: 0, time: Date.now() };
         record.score = this.fscore(record.score, record.time, delta);
         record.time = Date.now();
         this.records.set(name, record);
         return record.score >= this.threshold;
+    }
+    _cleanup() {
+        const now = Date.now();
+        if (now - this._lastCleanup < this.halflife * 1000 * 5) return;
+        this._lastCleanup = now;
+        const expire = now - this.halflife * 1000 * 10;
+        for (const [name, record] of this.records) {
+            if (record.time < expire) this.records.delete(name);
+        }
     }
     setParams(halflife, threshold) {
         this.halflife = halflife;
@@ -152,7 +163,9 @@ const DATA_FILES = {
     bindings: 'bindings.json',
     settings: 'settings.json',
     admin: 'admin.json',
-    afkme: 'afkme.json'
+    afkme: 'afkme.json',
+    planTasks: 'planTasks.json',
+    userCountdowns: 'userCountdowns.json'
 };
 
 class DataStore {
@@ -310,9 +323,19 @@ const bot = {
     lastUserColor: new Map(),
     joinColor: new Map(),
     hourlyAds: { enabled: true, hours: {}, ads: {} },
+    rankSettings: {},
+    planTasks: [],
+    userCountdowns: new Map(),
+    msgQueue: [],
+    _replyTarget: null,
+    depBotEnabled: false,
+    depBotNick: '',
+    depBotTrip: '',
+    depBotPrefix: '',
     includeYiyan: true,
     motdEnabled: false,
     motdLines: [],
+    motdActivity: false,
     fakemotdEnabled: false,
     fakemotdContent: '',
     lastSeen: new Map(),
@@ -337,6 +360,8 @@ const bot = {
     whitelist: new Set(),
     adminLogs: [],
     wordCount: new Map(),
+    todayWordCount: new Map(),
+    todayWordCountDate: '',
     logStream: null,
     logDate: '',
     inChannel: false,
@@ -358,10 +383,12 @@ const bot = {
     },
 
     startAutoSave() {
+        this._saving = false;
         this.saveTimer = setInterval(async () => {
-            if (this.dirty) {
+            if (this.dirty && !this._saving) {
                 this.dirty = false;
-                await this.flushSave();
+                this._saving = true;
+                try { await this.flushSave(); } catch(e) { this.dirty = true; } finally { this._saving = false; }
             }
         }, CONFIG.CONST.saveIntervalMs);
     },
@@ -392,7 +419,9 @@ const bot = {
                 store.set('bindings', state.bindings),
                 store.set('settings', state.settings),
                 store.set('admin', state.admin),
-                store.set('afkme', state.afkme)
+                store.set('afkme', state.afkme),
+                store.set('planTasks', state.planTasks),
+                store.set('userCountdowns', state.userCountdowns)
             ]);
             this.saveHistory();
         } catch (err) {
@@ -425,6 +454,8 @@ const bot = {
         store.setSync('settings', state.settings);
         store.setSync('admin', state.admin);
         store.setSync('afkme', state.afkme);
+        store.setSync('planTasks', state.planTasks);
+        store.setSync('userCountdowns', state.userCountdowns);
         this.saveHistory();
     },
 
@@ -439,7 +470,7 @@ const bot = {
             lastseen: Object.fromEntries(this.lastSeen),
             banwords: this.banWords,
             mods: { list: [...this.modList], mode: this.modMode },
-            announce: this.scheduledAnnouncements.map(({ lastSendTime, ...rest }) => rest),
+            announce: this.scheduledAnnouncements,
             random: { enabled: this.randomEnabled, prob: this.randomProb },
             ratelimit: { halflife: this.rl.halflife, threshold: this.rl.threshold, enabled: this.rl.enabled },
             slowmode: { enabled: this.slowModeEnabled, interval: this.slowModeInterval },
@@ -464,15 +495,23 @@ const bot = {
                 coreMode: this.coreMode,
                 motdEnabled: this.motdEnabled,
                 motdLines: this.motdLines,
+                motdActivity: this.motdActivity,
                 fakemotdEnabled: this.fakemotdEnabled,
                 fakemotdContent: this.fakemotdContent,
                 privateCmd: this.privateCmd,
                 historyKeepDays: this.historyKeepDays,
                 historyKeepMsgDays: this.historyKeepMsgDays,
-                hourlyAds: this.hourlyAds
+                hourlyAds: this.hourlyAds,
+                rankSettings: this.rankSettings,
+                depBotEnabled: this.depBotEnabled,
+                depBotNick: this.depBotNick,
+                depBotTrip: this.depBotTrip,
+                depBotPrefix: this.depBotPrefix
             },
             admin: [...this.adminList],
-            afkme: this.afkme
+            afkme: this.afkme,
+            planTasks: this.planTasks || [],
+            userCountdowns: Object.fromEntries(this.userCountdowns || new Map())
         };
     },
 
@@ -488,9 +527,9 @@ const bot = {
             this.welcomeMessages = new Map(Object.entries(welcome.messages || {}));
         } else {
             this.welcomeEnabled = true;
-            this.welcomeMessages = new Map(Object.entries(welcome));
+            this.welcomeMessages = new Map(Object.entries(welcome || {}));
         }
-        this.globalWelcome = Array.isArray(welcome.global) ? welcome.global : [];
+        this.globalWelcome = Array.isArray(welcome?.global) ? welcome.global : [];
         this.lastSeen = new Map(Object.entries(read('lastseen', {})));
         this.banWords = read('banwords', []);
         this.modList = new Set(mods.list || []);
@@ -535,6 +574,7 @@ const bot = {
             if (typeof settings.coreMode === 'boolean') this.coreMode = settings.coreMode;
             if (typeof settings.motdEnabled === 'boolean') this.motdEnabled = settings.motdEnabled;
             if (Array.isArray(settings.motdLines)) this.motdLines = settings.motdLines;
+            if (typeof settings.motdActivity === 'boolean') this.motdActivity = settings.motdActivity;
             if (typeof settings.fakemotdEnabled === 'boolean') this.fakemotdEnabled = settings.fakemotdEnabled;
             if (typeof settings.fakemotdContent === 'string') this.fakemotdContent = settings.fakemotdContent;
             if (settings.privateCmd && typeof settings.privateCmd === 'object') {
@@ -548,13 +588,22 @@ const bot = {
             if (settings.hourlyAds && typeof settings.hourlyAds === 'object') {
                 this.hourlyAds = { enabled: !!settings.hourlyAds.enabled, hours: settings.hourlyAds.hours || {}, ads: settings.hourlyAds.ads || {} };
             }
+            if (settings.rankSettings && typeof settings.rankSettings === 'object') {
+                this.rankSettings = settings.rankSettings;
+            }
+            if (typeof settings.depBotEnabled === 'boolean') this.depBotEnabled = settings.depBotEnabled;
+            if (typeof settings.depBotNick === 'string') this.depBotNick = settings.depBotNick;
+            if (typeof settings.depBotTrip === 'string') this.depBotTrip = settings.depBotTrip;
+            if (typeof settings.depBotPrefix === 'string') this.depBotPrefix = settings.depBotPrefix;
         }
         this.adminList = new Set(read('admin', []));
         if (!this.adminList.size) {
             this.adminList.add(CONFIG.CONST.ADMIN_TRIPCODE);
-            this.adminList.add('Admin');
         }
         this.afkme = read('afkme', []);
+        this.planTasks = read('planTasks', []);
+        const userCdObj = read('userCountdowns', {});
+        this.userCountdowns = new Map(Object.entries(userCdObj).map(([k, v]) => [k, v]));
         this.loadHistory();
         this.cleanExpiredLeftMessages();
         this.cleanOldHistory();
@@ -639,7 +688,7 @@ const bot = {
             this.messageHistory = merged.slice(-CONFIG.CONST.maxMsgHistory);
             this.messageIdMap = new Map(this.messageHistory.map(m => [m.id, m]));
             this.nextMessageId = this.messageHistory.length
-                ? Math.max(...this.messageHistory.map(m => m.id)) + 1
+                ? this.messageHistory.reduce((max, m) => Math.max(max, m.id), 0) + 1
                 : 1;
         } catch (e) {}
     },
@@ -698,14 +747,16 @@ const bot = {
 
     localDate() {
         const now = this.getLocalTime();
-        const y = now.getFullYear();
-        const m = String(now.getMonth() + 1).padStart(2, '0');
-        const d = String(now.getDate()).padStart(2, '0');
+        const y = now.getUTCFullYear();
+        const m = String(now.getUTCMonth() + 1).padStart(2, '0');
+        const d = String(now.getUTCDate()).padStart(2, '0');
         return `${y}-${m}-${d}`;
     },
 
     isToday(ts) {
-        return this.getLocalTime(ts).toDateString() === this.getLocalTime().toDateString();
+        const a = this.getLocalTime(ts);
+        const b = this.getLocalTime();
+        return a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth() && a.getUTCDate() === b.getUTCDate();
     },
 
     cleanOldLogs() {
