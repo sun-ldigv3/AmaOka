@@ -1,6 +1,6 @@
 {
   "name": "amaoka-bot",
-  "version": "1.2.2",
+  "version": "1.2.4",
   "description": "a hack.chat bot",
   "main": "./main.js",
   "scripts": {
