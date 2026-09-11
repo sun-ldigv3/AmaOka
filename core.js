@@ -19,6 +19,17 @@ module.exports = {
         this.sendWSMessage({ cmd: 'chat', text, clientId: this.clientId }, false, ignoreMute);
     },
 
+    sendReply(text) {
+        if (!text) return;
+        if (this._runCollections) {
+            this._runCollections.pub.push(String(text));
+        } else if (this._replyTarget) {
+            this.sendWhisper(this._replyTarget, text);
+        } else {
+            this.sendChat(text);
+        }
+    },
+
     sendMessage(text, customId, ignoreMute = false) {
         if (!text) return;
         const payload = { cmd: 'chat', text, clientId: this.clientId };
@@ -166,10 +177,10 @@ module.exports = {
         const text = msg.text || '';
         console.log(`[WARN] ${text}`);
         if (text === 'Nickname taken') {
-            const baseNick = CONFIG.botNick.split('_')[0];
+            if (!this._originalBotNick) this._originalBotNick = CONFIG.botNick;
+            const baseNick = this._originalBotNick.split('_')[0];
             const newNick = baseNick + '_' + Math.random().toString(36).slice(2, 6);
             console.log(`[昵称被占] 尝试改为 ${newNick}`);
-            this.sendWSMessage({ cmd: 'chat', text: `/kick ${CONFIG.botNick}`, clientId: this.clientId }, true, true);
             CONFIG.botNick = newNick;
             this.selfMute(5);
             setTimeout(() => this.connectWS(), 6000);
@@ -208,6 +219,8 @@ module.exports = {
     },
 
     startKeepAlive() {
+        for (const id of this.scheduledIntervals) clearInterval(id);
+        this.scheduledIntervals.length = 0;
         this.scheduledIntervals.push(setInterval(() => {
             this.sendWhisper(CONFIG.botNick, 'w');
         }, CONFIG.CONST.pingIntervalMs));
@@ -278,6 +291,10 @@ class AFKClient {
             this.reconnectTimer = null;
         }
         this.clearKeepAlive();
+        if (this.ws) {
+            try { this.ws.removeAllListeners(); this.ws.terminate(); } catch (e) {}
+            this.ws = null;
+        }
         const ws = new WebSocket(CONFIG.server);
         this.ws = ws;
         ws.on('open', () => {
