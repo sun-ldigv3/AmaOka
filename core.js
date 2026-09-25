@@ -1,6 +1,10 @@
 const WebSocket = require('ws');
 const { CONFIG, bot } = require('./status');
 
+function escapeRegExp(s) {
+    return String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 module.exports = {
     shouldAddPlaceholder(text) {
         return text && text.includes('\n');
@@ -23,6 +27,8 @@ module.exports = {
         if (!text) return;
         if (this._runCollections) {
             this._runCollections.pub.push(String(text));
+        } else if (this._forceReplyMode === 'public') {
+            this.sendChat(String(text).replace(new RegExp('^' + escapeRegExp(this.placeholder) + '\\n'), ''));
         } else if (this._replyTarget) {
             this.sendWhisper(this._replyTarget, text);
         } else {
@@ -45,11 +51,14 @@ module.exports = {
     },
 
     selfMute(seconds) {
+        const now = Date.now();
+        const newUntil = now + seconds * 1000;
+        if (this.selfMuteUntil && this.selfMuteUntil > newUntil) return;
         if (this.selfMuteTimer) {
             clearTimeout(this.selfMuteTimer);
             this.selfMuteTimer = null;
         }
-        this.selfMuteUntil = Date.now() + seconds * 1000;
+        this.selfMuteUntil = newUntil;
         console.log(`[自我休眠] ${seconds} 秒，至 ${new Date(this.selfMuteUntil).toLocaleTimeString()}`);
         this.selfMuteTimer = setTimeout(() => {
             this.selfMuteUntil = null;
@@ -159,6 +168,7 @@ module.exports = {
                 return;
             }
             if (msg.cmd === 'warn') {
+                if (/Could not find user/i.test(msg.text || '')) return;
                 this.handleWarn(msg);
                 return;
             }
@@ -183,7 +193,11 @@ module.exports = {
             console.log(`[昵称被占] 尝试改为 ${newNick}`);
             CONFIG.botNick = newNick;
             this.selfMute(5);
-            setTimeout(() => this.connectWS(), 6000);
+            if (this._renickTimer) clearTimeout(this._renickTimer);
+            this._renickTimer = setTimeout(() => {
+                this._renickTimer = null;
+                this.connectWS();
+            }, 6000);
         } else if (/^You are (?:be|join|send)ing/.test(text)) {
             this.selfMute(30);
         }
@@ -195,7 +209,7 @@ module.exports = {
             this.selfMute(sleepSec);
             return;
         }
-        this.sendChat(`服务端错误：${msg.error}`);
+        this.sendChat(`服务端错误: ${msg.error}`);
     },
 
     measurePing() {
@@ -252,7 +266,7 @@ module.exports = {
             const idle = Date.now() - (this.lastAliveMs || Date.now());
             if (idle > CONFIG.CONST.aliveTimeoutMs) {
                 this.idleStrikes++;
-                console.log(`[保活] 连接无响应 ${Math.floor(idle/1000)}s（第${this.idleStrikes}次）`);
+                console.log(`[保活] 连接无响应 ${Math.floor(idle/1000)}s (第${this.idleStrikes}次)`);
                 if (this.idleStrikes >= 2) {
                     this.idleStrikes = 0;
                     console.log('[保活] 连续无响应，强制重连');
@@ -267,25 +281,33 @@ module.exports = {
     },
 };
 
-class AFKClient {
+class CloneClient {
     constructor(bot, cfg) {
         this.bot = bot;
         this.nick = cfg.nick;
         this.trip = cfg.trip || '';
         this.channel = cfg.channel;
+        this.expiresAt = cfg.expiresAt || 0;
         this.loginNick = this.trip ? `${this.nick}#${this.trip}` : this.nick;
         this.ws = null;
         this.reconnectTimer = null;
         this.keepAliveTimer = null;
         this.watchdogTimer = null;
+        this.expireTimer = null;
         this.connected = false;
         this.stopped = false;
         this.lastAliveMs = 0;
         this.connectedAt = 0;
         this.idleStrikes = 0;
         this.reconnectAttempts = 0;
+        if (this.expiresAt > Date.now()) {
+            this.expireTimer = setTimeout(() => this.close(), this.expiresAt - Date.now());
+        } else if (this.expiresAt > 0) {
+            this.close();
+        }
     }
     connect() {
+        if (this.stopped) return;
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;
@@ -319,7 +341,7 @@ class AFKClient {
                 const msg = JSON.parse(data.toString());
                 if (msg.cmd === 'warn' && msg.text === 'Nickname taken') {
                     console.log(`[分身] ${this.loginNick} 昵称被占用`);
-                    this.bot.sendChat(`分身 ${this.loginNick} 昵称被占用`);
+                    this.bot.sendChat(`分身 ${this.loginNick} 昵称被占用\nNickname taken`);
                 }
             } catch (err) {}
         });
@@ -357,7 +379,7 @@ class AFKClient {
             if (Date.now() - (this.connectedAt || 0) < CONFIG.CONST.watchdogGraceMs) return;
             if (this.lastAliveMs && Date.now() - this.lastAliveMs > CONFIG.CONST.afkAliveTimeoutMs) {
                 this.idleStrikes++;
-                console.log(`[分身] ${this.loginNick} 无响应 ${Math.floor((Date.now()-this.lastAliveMs)/1000)}s（第${this.idleStrikes}次）`);
+                console.log(`[分身] ${this.loginNick} 无响应 ${Math.floor((Date.now()-this.lastAliveMs)/1000)}s (第${this.idleStrikes}次)`);
                 if (this.idleStrikes >= 2) {
                     this.idleStrikes = 0;
                     console.log(`[分身] ${this.loginNick} 连续无响应，强制重连`);
@@ -384,6 +406,10 @@ class AFKClient {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;
         }
+        if (this.expireTimer) {
+            clearTimeout(this.expireTimer);
+            this.expireTimer = null;
+        }
         this.clearKeepAlive();
         if (this.ws) {
             try { this.ws.terminate(); } catch (e) {}
@@ -392,4 +418,4 @@ class AFKClient {
     }
 }
 
-module.exports.AFKClient = AFKClient;
+module.exports.CloneClient = CloneClient;
