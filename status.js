@@ -15,7 +15,7 @@ const CONFIG = {
         MOD_PREFIX: ';',
         ADMIN_PREFIX: '.',
         muteCheckInterval: 10000,
-        maxMsgHistory: 5000,
+        maxMsgHistory: 9999,
         latestMsgCount: 5,
         welcomeMsg: "hi [nick]",
         styleTemplates: {
@@ -35,7 +35,8 @@ includeYiyan: true,
         bodyParts: ['heart', 'head', 'chest', 'lung', 'stomach', 'arm', 'leg', 'hand', 'foot', 'neck', 'shoulder', 'knee', 'eye', 'ear', 'mouth', 'throat', 'brain', 'liver', 'rib', 'spine'],
         timezoneOffset: 8,
         slowModeDefault: 3,
-        logDir: './logs',
+        logDir: './data/logs',
+        checkBotLevel: true,
         adminLogMax: 100,
         maxLogAge: 30,
         emojiList: ['😀','😂','🤣','😍','😎','🥳','😜','😇','🤔','😅','😉','😘','🥰','😋','🤗','🙃','😏','😌','😔','😪','🤩','🥺','😤','😭','😱','🤯','😳','🥵','😈','💀'],
@@ -163,7 +164,7 @@ const DATA_FILES = {
     bindings: 'bindings.json',
     settings: 'settings.json',
     admin: 'admin.json',
-    afkme: 'afkme.json',
+    clone: 'clone.json',
     planTasks: 'planTasks.json',
     userCountdowns: 'userCountdowns.json'
 };
@@ -172,10 +173,21 @@ class DataStore {
     constructor(rootDir) {
         this.rootDir = rootDir;
         this.cache = new Map();
+        this.written = new Map();
         this.mutex = new Mutex();
         fs.ensureDirSync(rootDir);
         fs.ensureDirSync(BACKUP_DIR);
         fs.ensureDirSync(HISTORY_DIR);
+    }
+    _contentUnchanged(key, text, fp) {
+        if (this.written.has(key)) return this.written.get(key) === text;
+        try {
+            if (fs.existsSync(fp) && fs.readFileSync(fp, 'utf8') === text) {
+                this.written.set(key, text);
+                return true;
+            }
+        } catch (e) {}
+        return false;
     }
     filePath(key) {
         return path.join(this.rootDir, DATA_FILES[key] || `${key}.json`);
@@ -194,13 +206,13 @@ class DataStore {
         return JSON.stringify(value, replacer, 2);
     }
     writeAtomicSync(fp, text) {
-        const tmp = fp + '.tmp';
+        const tmp = fp + '.' + process.pid + '.' + Date.now() + '.tmp';
         fs.ensureDirSync(path.dirname(fp));
         fs.writeFileSync(tmp, text);
         fs.renameSync(tmp, fp);
     }
     async writeAtomic(fp, text) {
-        const tmp = fp + '.tmp';
+        const tmp = fp + '.' + process.pid + '.' + Date.now() + '.tmp';
         fs.ensureDirSync(path.dirname(fp));
         await fs.writeFile(tmp, text);
         await fs.rename(tmp, fp);
@@ -210,6 +222,9 @@ class DataStore {
             if (fs.existsSync(fp)) return JSON.parse(fs.readFileSync(fp, 'utf8'));
         } catch (e) {
             console.error(`[数据损坏] ${fp}: ${e.message}`);
+            try {
+                if (fs.existsSync(fp)) fs.copySync(fp, fp + '.corrupt', { overwrite: true });
+            } catch (e2) {}
         }
         return undefined;
     }
@@ -225,20 +240,36 @@ class DataStore {
     }
     async set(key, value) {
         this.cache.set(key, value);
+        const text = this.safeStringify(value);
+        const fp = this.filePath(key);
+        if (this._contentUnchanged(key, text, fp)) return;
         const release = await this.mutex.acquire();
         try {
-            await this.writeAtomic(this.filePath(key), this.safeStringify(value));
+            await this.writeAtomic(fp, text);
+            this.written.set(key, text);
         } finally {
             release();
         }
     }
     setSync(key, value) {
         this.cache.set(key, value);
+        const text = this.safeStringify(value);
+        const fp = this.filePath(key);
+        if (this._contentUnchanged(key, text, fp)) return;
         try {
-            this.writeAtomicSync(this.filePath(key), this.safeStringify(value));
+            this.writeAtomicSync(fp, text);
+            this.written.set(key, text);
         } catch (e) {
             console.error(`[写入失败] ${key}: ${e.message}`);
         }
+    }
+    invalidate(key) {
+        this.cache.delete(key);
+        this.written.delete(key);
+    }
+    invalidateAll() {
+        this.cache.clear();
+        this.written.clear();
     }
     readFile(relPath, fallback = null) {
         const fp = path.join(this.rootDir, relPath);
@@ -247,22 +278,24 @@ class DataStore {
     }
     async writeFile(relPath, value) {
         const fp = path.join(this.rootDir, relPath);
+        const text = this.safeStringify(value);
+        if (this._contentUnchanged(relPath, text, fp)) return;
         fs.ensureDirSync(path.dirname(fp));
         const release = await this.mutex.acquire();
         try {
-            await this.writeAtomic(fp, this.safeStringify(value));
+            await this.writeAtomic(fp, text);
+            this.written.set(relPath, text);
         } finally {
             release();
         }
     }
     writeFileSync(relPath, value) {
         const fp = path.join(this.rootDir, relPath);
+        const text = this.safeStringify(value);
+        if (this._contentUnchanged(relPath, text, fp)) return;
         fs.ensureDirSync(path.dirname(fp));
-        try {
-            this.writeAtomicSync(fp, this.safeStringify(value));
-        } catch (e) {
-            console.error(`[写入失败] ${relPath}: ${e.message}`);
-        }
+        this.writeAtomicSync(fp, text);
+        this.written.set(relPath, text);
     }
     listFiles(subdir, ext = '.json') {
         const dir = path.join(this.rootDir, subdir);
@@ -318,16 +351,31 @@ const bot = {
     questionReply: true,
     opHint: true,
     adminList: new Set(),
-    afkme: [],
-    afkmeClients: new Map(),
+    clones: [],
+    cloneClients: new Map(),
     lastUserColor: new Map(),
     joinColor: new Map(),
     hourlyAds: { enabled: true, hours: {}, ads: {} },
     rankSettings: {},
     planTasks: [],
     userCountdowns: new Map(),
-    msgQueue: [],
     _replyTarget: null,
+    _forceReplyMode: null,
+    disabledCmds: new Set(),
+    cmdLevels: null,
+    noPermHint: true,
+    passwordEnabled: true,
+    adminAction: '(｀へ´)',
+    historyEnabled: true,
+    logEnabled: true,
+    autoExportDays: 0,
+    lastAutoExportAt: 0,
+    replyEnabled: false,
+    replyProb: 100,
+    replyDelay: 0,
+    replyRules: [],
+    fc: { enabled: false, mode: 'mix', length: 6, timeout: 30 },
+    fcPending: new Map(),
     depBotEnabled: false,
     depBotNick: '',
     depBotTrip: '',
@@ -383,6 +431,8 @@ const bot = {
     },
 
     startAutoSave() {
+        if (this._autoSaveStarted) return;
+        this._autoSaveStarted = true;
         this._saving = false;
         this.saveTimer = setInterval(async () => {
             if (this.dirty && !this._saving) {
@@ -419,51 +469,58 @@ const bot = {
                 store.set('bindings', state.bindings),
                 store.set('settings', state.settings),
                 store.set('admin', state.admin),
-                store.set('afkme', state.afkme),
+                store.set('clone', state.clone),
                 store.set('planTasks', state.planTasks),
                 store.set('userCountdowns', state.userCountdowns)
             ]);
             this.saveHistory();
         } catch (err) {
+            this.dirty = true;
             console.error('[自动保存失败]', err);
         }
     },
 
     saveAllDataSync() {
-        const state = this.exportState();
-        store.setSync('rules', state.rules);
-        store.setSync('hash', state.hash);
-        store.setSync('welcome', state.welcome);
-        store.setSync('lastseen', state.lastseen);
-        store.setSync('banwords', state.banwords);
-        store.setSync('mods', state.mods);
-        store.setSync('announce', state.announce);
-        store.setSync('random', state.random);
-        store.setSync('ratelimit', state.ratelimit);
-        store.setSync('slowmode', state.slowmode);
-        store.setSync('subscriptions', state.subscriptions);
-        store.setSync('votes', state.votes);
-        store.setSync('whitelist', state.whitelist);
-        store.setSync('tempban', state.tempban);
-        store.setSync('silence', state.silence);
-        store.setSync('adminlog', state.adminlog);
-        store.setSync('ignore', state.ignore);
-        store.setSync('blacklist', state.blacklist);
-        store.setSync('left', state.left);
-        store.setSync('bindings', state.bindings);
-        store.setSync('settings', state.settings);
-        store.setSync('admin', state.admin);
-        store.setSync('afkme', state.afkme);
-        store.setSync('planTasks', state.planTasks);
-        store.setSync('userCountdowns', state.userCountdowns);
-        this.saveHistory();
+        try {
+            const state = this.exportState();
+            store.setSync('rules', state.rules);
+            store.setSync('hash', state.hash);
+            store.setSync('welcome', state.welcome);
+            store.setSync('lastseen', state.lastseen);
+            store.setSync('banwords', state.banwords);
+            store.setSync('mods', state.mods);
+            store.setSync('announce', state.announce);
+            store.setSync('random', state.random);
+            store.setSync('ratelimit', state.ratelimit);
+            store.setSync('slowmode', state.slowmode);
+            store.setSync('subscriptions', state.subscriptions);
+            store.setSync('votes', state.votes);
+            store.setSync('whitelist', state.whitelist);
+            store.setSync('tempban', state.tempban);
+            store.setSync('silence', state.silence);
+            store.setSync('adminlog', state.adminlog);
+            store.setSync('ignore', state.ignore);
+            store.setSync('blacklist', state.blacklist);
+            store.setSync('left', state.left);
+            store.setSync('bindings', state.bindings);
+            store.setSync('settings', state.settings);
+            store.setSync('admin', state.admin);
+            store.setSync('clone', state.clone);
+            store.setSync('planTasks', state.planTasks);
+            store.setSync('userCountdowns', state.userCountdowns);
+            this.saveHistory();
+        } catch (err) {
+            console.error('[同步保存失败]', err);
+        }
     },
 
     exportState() {
-        const hashObj = Object.fromEntries([...this.hashHistory.entries()].map(([k, v]) => [k, [...v]]));
-        const subsObj = Object.fromEntries([...this.subscriptions.entries()].map(([k, v]) => [k, [...v]]));
-        const votesObj = Object.fromEntries([...this.votes.entries()].map(([k, v]) => [k, { ...v, options: [...v.options.entries()], voters: [...v.voters] }]));
-        return {
+        try {
+            const hashObj = Object.fromEntries([...this.hashHistory.entries()].map(([k, v]) => [k, [...v]]));
+            const subsObj = Object.fromEntries([...this.subscriptions.entries()].map(([k, v]) => [k, [...v]]));
+            const votesObj = Object.fromEntries([...this.votes.entries()].map(([k, v]) => [k, { ...v, options: [...v.options.entries()], voters: [...v.voters] }]));
+            const adminLogs = Array.isArray(this.adminLogs) ? this.adminLogs : [];
+            return {
             rules: this.ifRules,
             hash: hashObj,
             welcome: { enabled: this.welcomeEnabled, messages: Object.fromEntries(this.welcomeMessages), global: this.globalWelcome },
@@ -479,7 +536,7 @@ const bot = {
             whitelist: [...this.whitelist],
             tempban: Object.fromEntries(this.tempbanned),
             silence: [...this.silencedUsers.entries()].map(([k, v]) => [k, v === Infinity ? 'forever' : v]),
-            adminlog: this.adminLogs.slice(-CONFIG.CONST.adminLogMax),
+            adminlog: adminLogs.slice(-CONFIG.CONST.adminLogMax),
             ignore: [...this.ignoreList],
             blacklist: [...this.blackList],
             left: this.leftMessages,
@@ -501,18 +558,36 @@ const bot = {
                 privateCmd: this.privateCmd,
                 historyKeepDays: this.historyKeepDays,
                 historyKeepMsgDays: this.historyKeepMsgDays,
+                historyEnabled: this.historyEnabled,
+                logEnabled: this.logEnabled,
+                autoExportDays: this.autoExportDays,
+                lastAutoExportAt: this.lastAutoExportAt,
                 hourlyAds: this.hourlyAds,
                 rankSettings: this.rankSettings,
                 depBotEnabled: this.depBotEnabled,
                 depBotNick: this.depBotNick,
                 depBotTrip: this.depBotTrip,
-                depBotPrefix: this.depBotPrefix
+                depBotPrefix: this.depBotPrefix,
+                disabledCmds: [...this.disabledCmds],
+                cmdLevels: this.cmdLevels || null,
+                noPermHint: this.noPermHint,
+                passwordEnabled: this.passwordEnabled,
+                adminAction: this.adminAction,
+                replyEnabled: this.replyEnabled,
+                replyProb: this.replyProb,
+                replyDelay: this.replyDelay,
+                replyRules: this.replyRules,
+                fc: this.fc
             },
             admin: [...this.adminList],
-            afkme: this.afkme,
+            clone: this.clones,
             planTasks: this.planTasks || [],
             userCountdowns: Object.fromEntries(this.userCountdowns || new Map())
         };
+        } catch (err) {
+            console.error('[导出状态失败]', err);
+            throw err;
+        }
     },
 
     loadAllData() {
@@ -531,6 +606,12 @@ const bot = {
         }
         this.globalWelcome = Array.isArray(welcome?.global) ? welcome.global : [];
         this.lastSeen = new Map(Object.entries(read('lastseen', {})));
+        for (const [k, v] of this.lastSeen) {
+            if (v && v.trip && k === v.trip && !k.startsWith('*')) {
+                this.lastSeen.delete(k);
+                this.lastSeen.set('*' + k, v);
+            }
+        }
         this.banWords = read('banwords', []);
         this.modList = new Set(mods.list || []);
         this.modMode = !!mods.mode;
@@ -584,7 +665,29 @@ const bot = {
                     else if (typeof v === 'boolean') this.privateCmd[lv] = v ? 'on' : 'off';
                 }
             }
+            if (typeof settings.historyKeepDays === 'number') this.historyKeepDays = settings.historyKeepDays;
             if (typeof settings.historyKeepMsgDays === 'number') this.historyKeepMsgDays = settings.historyKeepMsgDays;
+            if (typeof settings.historyEnabled === 'boolean') this.historyEnabled = settings.historyEnabled;
+            if (typeof settings.logEnabled === 'boolean') this.logEnabled = settings.logEnabled;
+            if (typeof settings.autoExportDays === 'number') this.autoExportDays = settings.autoExportDays;
+            if (typeof settings.lastAutoExportAt === 'number') this.lastAutoExportAt = settings.lastAutoExportAt;
+            if (Array.isArray(settings.disabledCmds)) this.disabledCmds = new Set(settings.disabledCmds);
+            if (settings.cmdLevels && typeof settings.cmdLevels === 'object') this.cmdLevels = settings.cmdLevels;
+            if (typeof settings.noPermHint === 'boolean') this.noPermHint = settings.noPermHint;
+            if (typeof settings.passwordEnabled === 'boolean') this.passwordEnabled = settings.passwordEnabled;
+            if (typeof settings.adminAction === 'string') this.adminAction = settings.adminAction;
+            if (typeof settings.replyEnabled === 'boolean') this.replyEnabled = settings.replyEnabled;
+            if (typeof settings.replyProb === 'number') this.replyProb = settings.replyProb;
+            if (typeof settings.replyDelay === 'number') this.replyDelay = settings.replyDelay;
+            if (Array.isArray(settings.replyRules)) this.replyRules = settings.replyRules;
+            if (settings.fc && typeof settings.fc === 'object') {
+                this.fc = {
+                    enabled: !!settings.fc.enabled,
+                    mode: ['letter', 'number', 'mix'].includes(settings.fc.mode) ? settings.fc.mode : 'mix',
+                    length: Math.min(20, Math.max(1, Number(settings.fc.length) || 6)),
+                    timeout: Math.max(1, Number(settings.fc.timeout) || 30)
+                };
+            }
             if (settings.hourlyAds && typeof settings.hourlyAds === 'object') {
                 this.hourlyAds = { enabled: !!settings.hourlyAds.enabled, hours: settings.hourlyAds.hours || {}, ads: settings.hourlyAds.ads || {} };
             }
@@ -600,7 +703,25 @@ const bot = {
         if (!this.adminList.size) {
             this.adminList.add(CONFIG.CONST.ADMIN_TRIPCODE);
         }
-        this.afkme = read('afkme', []);
+        this.clones = read('clone', null);
+        if (!Array.isArray(this.clones)) {
+            try {
+                const oldFp = path.join(this.rootDir, 'afkme.json');
+                if (fs.existsSync(oldFp)) {
+                    const old = JSON.parse(fs.readFileSync(oldFp, 'utf8'));
+                    if (Array.isArray(old)) {
+                        this.clones = old;
+                        store.set('clone', old);
+                    }
+                }
+            } catch (e) {}
+        }
+        if (!Array.isArray(this.clones)) this.clones = [];
+        if (!this.clones.length) {
+            try { fs.removeSync(path.join(this.rootDir, 'afkme.json')); } catch (e) {}
+        } else {
+            try { fs.moveSync(path.join(this.rootDir, 'afkme.json'), path.join(this.rootDir, 'afkme.json.bak'), { overwrite: true }); } catch (e) {}
+        }
         this.planTasks = read('planTasks', []);
         const userCdObj = read('userCountdowns', {});
         this.userCountdowns = new Map(Object.entries(userCdObj).map(([k, v]) => [k, v]));
@@ -621,6 +742,7 @@ const bot = {
 
     cleanOldHistory() {
         try {
+            if (!(this.historyKeepDays > 0)) return;
             const cutoff = Date.now() - this.historyKeepDays * 24 * 3600 * 1000;
             for (const f of store.listFiles('history')) {
                 const m = /^(?:history_|hackchat_.*_)(\d{4}-\d{2}-\d{2})\.json$/.exec(f);
@@ -730,6 +852,7 @@ const bot = {
     },
 
     addAdminLog(action, target, by) {
+        if (this.logEnabled === false) return;
         this.adminLogs.push({ time: Date.now(), action, target: target || '', by: by || 'system' });
         if (this.adminLogs.length > CONFIG.CONST.adminLogMax) this.adminLogs.shift();
         this.markDirty();
@@ -743,6 +866,24 @@ const bot = {
         const base = ts ? new Date(ts) : new Date();
         const offset = CONFIG.CONST.timezoneOffset * 60 * 60 * 1000;
         return new Date(base.getTime() + offset);
+    },
+
+    formatTime(ts) {
+        const t = this.getLocalTime(ts);
+        const y = t.getUTCFullYear();
+        const m = String(t.getUTCMonth() + 1).padStart(2, '0');
+        const d = String(t.getUTCDate()).padStart(2, '0');
+        const h = String(t.getUTCHours()).padStart(2, '0');
+        const min = String(t.getUTCMinutes()).padStart(2, '0');
+        const s = String(t.getUTCSeconds()).padStart(2, '0');
+        return `${y}-${m}-${d} ${h}:${min}:${s}`;
+    },
+
+    parseDec2(v) {
+        if (v === undefined || v === null || v === '') return NaN;
+        const m = String(v).match(/^(-?\d+(?:\.\d+)?)/);
+        if (!m) return NaN;
+        return Math.trunc(parseFloat(m[1]) * 100) / 100;
     },
 
     localDate() {
