@@ -16,7 +16,6 @@ const CONFIG = {
         ADMIN_PREFIX: '.',
         muteCheckInterval: 10000,
         maxMsgHistory: 9999,
-        latestMsgCount: 5,
         welcomeMsg: "hi [nick]",
         styleTemplates: {
             questionReplies: ['我也很不解', '我也很困惑', '不清楚', '是这样吗', '?', '？'],
@@ -69,6 +68,7 @@ includeYiyan: true,
 const PLACEHOLDER = '(｡•ᴗ•｡)';
 const ADMIN_ACTION = '(｀へ´)';
 const STAR = '(⭐)';
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const BOT_START_TIME = Date.now();
 
 class RateLimiter {
@@ -109,6 +109,23 @@ class RateLimiter {
     setEnabled(enabled) {
         this.enabled = enabled;
     }
+    clear() {
+        this.records.clear();
+    }
+    get size() {
+        return this.records.size;
+    }
+    get score() {
+        let max = 0;
+        for (const record of this.records.values()) {
+            const s = this.fscore(record.score, record.time, 0);
+            if (s > max) max = s;
+        }
+        return Math.round(max * 100) / 100;
+    }
+    toJSON() {
+        return { halflife: this.halflife, threshold: this.threshold, enabled: this.enabled };
+    }
 }
 
 class TokenBucket {
@@ -134,6 +151,16 @@ class TokenBucket {
             return true;
         }
         return false;
+    }
+    setParams(maxTokens, refillInterval) {
+        this.maxTokens = maxTokens;
+        this.refillInterval = refillInterval;
+        this.tokens = maxTokens;
+        this.lastRefill = Date.now();
+    }
+    clear() {
+        this.tokens = this.maxTokens;
+        this.lastRefill = Date.now();
     }
 }
 
@@ -399,6 +426,7 @@ const bot = {
     randomProb: 0,
     rl: new RateLimiter(30, 8),
     setuRl: new RateLimiter(40, 5),
+    joinRl: new RateLimiter(5, 15),
     slowModeEnabled: false,
     slowModeInterval: CONFIG.CONST.slowModeDefault,
     lastUserMsgTime: new Map(),
@@ -425,6 +453,14 @@ const bot = {
     connectedAt: 0,
     idleStrikes: 0,
     _pingSentAt: 0,
+
+    applyRlConfig(cfg, limiter) {
+        if (!cfg || !limiter) return;
+        const halflife = Number(cfg.halflife);
+        const threshold = Number(cfg.threshold);
+        if (halflife > 0 && threshold > 0) limiter.setParams(halflife, threshold);
+        if (typeof cfg.enabled === 'boolean') limiter.setEnabled(cfg.enabled);
+    },
 
     markDirty() {
         this.dirty = true;
@@ -518,7 +554,14 @@ const bot = {
         try {
             const hashObj = Object.fromEntries([...this.hashHistory.entries()].map(([k, v]) => [k, [...v]]));
             const subsObj = Object.fromEntries([...this.subscriptions.entries()].map(([k, v]) => [k, [...v]]));
-            const votesObj = Object.fromEntries([...this.votes.entries()].map(([k, v]) => [k, { ...v, options: [...v.options.entries()], voters: [...v.voters] }]));
+            const votesObj = Object.fromEntries(
+                [...(this.votes instanceof Map ? this.votes : new Map()).entries()]
+                    .map(([k, v]) => [k, {
+                        ...v,
+                        options: [...(v.options instanceof Map ? v.options : new Map()).entries()],
+                        voters: Array.isArray(v.voters) ? [...v.voters] : []
+                    }])
+            );
             const adminLogs = Array.isArray(this.adminLogs) ? this.adminLogs : [];
             return {
             rules: this.ifRules,
@@ -529,7 +572,14 @@ const bot = {
             mods: { list: [...this.modList], mode: this.modMode },
             announce: this.scheduledAnnouncements,
             random: { enabled: this.randomEnabled, prob: this.randomProb },
-            ratelimit: { halflife: this.rl.halflife, threshold: this.rl.threshold, enabled: this.rl.enabled },
+            ratelimit: {
+                halflife: this.rl.halflife,
+                threshold: this.rl.threshold,
+                enabled: this.rl.enabled,
+                setu: this.setuRl.toJSON(),
+                join: this.joinRl.toJSON(),
+                bucket: { maxTokens: this.tokenBucket.maxTokens, refillInterval: this.tokenBucket.refillInterval },
+            },
             slowmode: { enabled: this.slowModeEnabled, interval: this.slowModeInterval },
             subscriptions: subsObj,
             votes: votesObj,
@@ -625,6 +675,11 @@ const bot = {
         if (rl) {
             this.rl.setParams(rl.halflife, rl.threshold);
             if (typeof rl.enabled === 'boolean') this.rl.setEnabled(rl.enabled);
+            this.applyRlConfig(rl.setu, this.setuRl);
+            this.applyRlConfig(rl.join, this.joinRl);
+            if (rl.bucket && rl.bucket.maxTokens > 0 && rl.bucket.refillInterval > 0) {
+                this.tokenBucket.setParams(rl.bucket.maxTokens, rl.bucket.refillInterval);
+            }
         }
         const slow = read('slowmode', null);
         if (slow) {
@@ -704,24 +759,7 @@ const bot = {
             this.adminList.add(CONFIG.CONST.ADMIN_TRIPCODE);
         }
         this.clones = read('clone', null);
-        if (!Array.isArray(this.clones)) {
-            try {
-                const oldFp = path.join(this.rootDir, 'afkme.json');
-                if (fs.existsSync(oldFp)) {
-                    const old = JSON.parse(fs.readFileSync(oldFp, 'utf8'));
-                    if (Array.isArray(old)) {
-                        this.clones = old;
-                        store.set('clone', old);
-                    }
-                }
-            } catch (e) {}
-        }
         if (!Array.isArray(this.clones)) this.clones = [];
-        if (!this.clones.length) {
-            try { fs.removeSync(path.join(this.rootDir, 'afkme.json')); } catch (e) {}
-        } else {
-            try { fs.moveSync(path.join(this.rootDir, 'afkme.json'), path.join(this.rootDir, 'afkme.json.bak'), { overwrite: true }); } catch (e) {}
-        }
         this.planTasks = read('planTasks', []);
         const userCdObj = read('userCountdowns', {});
         this.userCountdowns = new Map(Object.entries(userCdObj).map(([k, v]) => [k, v]));
@@ -953,6 +991,7 @@ module.exports = {
     PLACEHOLDER,
     ADMIN_ACTION,
     STAR,
+    MONTH_NAMES,
     BOT_START_TIME,
     RateLimiter,
     TokenBucket,
