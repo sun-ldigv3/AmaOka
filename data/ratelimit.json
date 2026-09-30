@@ -1,5 +1,5 @@
 {
   "halflife": 30,
-  "threshold": 8,
+  "threshold": 12,
   "enabled": true
 }
