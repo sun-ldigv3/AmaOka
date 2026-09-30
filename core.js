@@ -11,16 +11,17 @@ module.exports = {
     },
 
     sendWSMessage(data, ignoreLimit = false, ignoreMute = false) {
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-        if (this.selfMuteUntil && this.selfMuteUntil > Date.now()) return;
-        if (this.isMuted && !ignoreMute) return;
-        if (!ignoreLimit && !this.tokenBucket.consume()) return;
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+        if (this.selfMuteUntil && this.selfMuteUntil > Date.now()) return false;
+        if (this.isMuted && !ignoreMute) return false;
+        if (!ignoreLimit && !this.tokenBucket.consume()) return false;
         this.ws.send(JSON.stringify(data));
+        return true;
     },
 
     sendChat(text, ignoreMute = false) {
-        if (!text) return;
-        this.sendWSMessage({ cmd: 'chat', text, clientId: this.clientId }, false, ignoreMute);
+        if (!text) return false;
+        return this.sendWSMessage({ cmd: 'chat', text, clientId: this.clientId }, false, ignoreMute);
     },
 
     sendReply(text) {
@@ -37,17 +38,17 @@ module.exports = {
     },
 
     sendMessage(text, customId, ignoreMute = false) {
-        if (!text) return;
+        if (!text) return false;
         const payload = { cmd: 'chat', text, clientId: this.clientId };
         if (customId) payload.customId = customId;
-        this.sendWSMessage(payload, false, ignoreMute);
+        return this.sendWSMessage(payload, false, ignoreMute);
     },
 
     sendWhisper(to, text, noPlaceholder = false) {
-        if (!to || !text) return;
+        if (!to || !text) return false;
         const finalText = !noPlaceholder && this.shouldAddPlaceholder(text) && !text.startsWith(this.placeholder)
             ? `${this.placeholder}\n${text}` : text;
-        this.sendWSMessage({ cmd: 'whisper', nick: to, text: finalText }, false, true);
+        return this.sendWSMessage({ cmd: 'whisper', nick: to, text: finalText }, false, true);
     },
 
     selfMute(seconds) {
