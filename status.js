@@ -19,37 +19,28 @@ const CONFIG = {
         welcomeMsg: "hi [nick]",
         styleTemplates: {
             questionReplies: ['我也很不解', '我也很困惑', '不清楚', '是这样吗', '?', '？'],
-            exclaimReplies: ['嘿嘿，这也太精彩了吧', '哎呦，不错哦', '哈哈，这波我给满分'],
-            greetingReplies: ['嗨，大家好呀～', '在的，有事喊你', '你好呀，今天也要加油哦'],
-            smallTalkReplies: ['嗯哼~', '哦哦', '了解啦']
+            smallTalkReplies: ['嗯哼~', '哦哦', '了解啦', '在的', '还在', '嗯', '收到', '刚才在听', '没走神', '记下了'],
+            idleReplies: ['有人在吗', '频道安静了一会儿', '我还在', '需要我做点什么吗', '我这边一切正常', '无事发生']
         },
         periodic: {
-includeYiyan: true,
-    coreMode: false,
-            includeStyle: true,
-            includeTriviaAuto: false
+            includeStyle: true
         },
         timestampExpireHours: 1,
-        userActivityExpireHours: 24,
         bodyParts: ['heart', 'head', 'chest', 'lung', 'stomach', 'arm', 'leg', 'hand', 'foot', 'neck', 'shoulder', 'knee', 'eye', 'ear', 'mouth', 'throat', 'brain', 'liver', 'rib', 'spine'],
         timezoneOffset: 8,
         slowModeDefault: 3,
         logDir: './data/logs',
         checkBotLevel: true,
         adminLogMax: 100,
-        maxLogAge: 30,
         emojiList: ['😀','😂','🤣','😍','😎','🥳','😜','😇','🤔','😅','😉','😘','🥰','😋','🤗','🙃','😏','😌','😔','😪','🤩','🥺','😤','😭','😱','🤯','😳','🥵','😈','💀'],
         hashPageSize: 10,
         msgTruncateLen: 100,
-        codeTruncateLen: 500,
-        codeMaxInputLen: 1000,
         primeMaxLen: 15,
         maxWordCount: 10000,
         maxLastSeen: 10000,
         maxHashNickCount: 100,
         maxHashKeys: 5000,
         leftExpireDays: 30,
-        historyKeepDays: 90,
         recentTimestampsMax: 1000,
         maxLogFiles: 30,
         reconnectBaseDelay: 5000,
@@ -61,6 +52,8 @@ includeYiyan: true,
         watchdogGraceMs: 30000,
         minConnectionAliveMs: 60000,
         afkAliveTimeoutMs: 240000,
+        idleMinutes: 15,
+        idleCheckInterval: 300000,
         REPO: 'https://github.com/sun-ldigv3/AmaOka'
     }
 };
@@ -408,6 +401,11 @@ const bot = {
     depBotTrip: '',
     depBotPrefix: '',
     includeYiyan: true,
+    includeStyle: CONFIG.CONST.periodic.includeStyle,
+    idleReply: true,
+    ifAuto: true,
+    afkMention: true,
+    lastChatAt: 0,
     motdEnabled: false,
     motdLines: [],
     motdActivity: false,
@@ -424,7 +422,7 @@ const bot = {
     isMuted: false,
     randomEnabled: false,
     randomProb: 0,
-    rl: new RateLimiter(30, 8),
+    rl: new RateLimiter(30, 12),
     setuRl: new RateLimiter(40, 5),
     joinRl: new RateLimiter(5, 15),
     slowModeEnabled: false,
@@ -599,6 +597,10 @@ const bot = {
                 questionReply: this.questionReply,
                 opHint: this.opHint,
                 includeYiyan: this.includeYiyan,
+                includeStyle: this.includeStyle,
+                idleReply: this.idleReply,
+                ifAuto: this.ifAuto,
+                afkMention: this.afkMention,
                 coreMode: this.coreMode,
                 motdEnabled: this.motdEnabled,
                 motdLines: this.motdLines,
@@ -707,6 +709,10 @@ const bot = {
             if (typeof settings.questionReply === 'boolean') this.questionReply = settings.questionReply;
             if (typeof settings.opHint === 'boolean') this.opHint = settings.opHint;
             if (typeof settings.includeYiyan === 'boolean') this.includeYiyan = settings.includeYiyan;
+            if (typeof settings.includeStyle === 'boolean') this.includeStyle = settings.includeStyle;
+            if (typeof settings.idleReply === 'boolean') this.idleReply = settings.idleReply;
+            if (typeof settings.ifAuto === 'boolean') this.ifAuto = settings.ifAuto;
+            if (typeof settings.afkMention === 'boolean') this.afkMention = settings.afkMention;
             if (typeof settings.coreMode === 'boolean') this.coreMode = settings.coreMode;
             if (typeof settings.motdEnabled === 'boolean') this.motdEnabled = settings.motdEnabled;
             if (Array.isArray(settings.motdLines)) this.motdLines = settings.motdLines;
@@ -915,6 +921,20 @@ const bot = {
         const min = String(t.getUTCMinutes()).padStart(2, '0');
         const s = String(t.getUTCSeconds()).padStart(2, '0');
         return `${y}-${m}-${d} ${h}:${min}:${s}`;
+    },
+
+    timeAgo(ts) {
+        const diff = Math.max(0, Date.now() - ts);
+        const days = Math.floor(diff / 86400000);
+        const hours = Math.floor((diff % 86400000) / 3600000);
+        const minutes = Math.floor((diff % 3600000) / 60000);
+        const seconds = Math.floor((diff % 60000) / 1000);
+        const parts = [];
+        if (days > 0) parts.push(`${days}天`);
+        if (hours > 0) parts.push(`${hours}时`);
+        if (minutes > 0) parts.push(`${minutes}分`);
+        if (seconds > 0 || parts.length === 0) parts.push(`${seconds}秒`);
+        return parts.join('');
     },
 
     parseDec2(v) {
