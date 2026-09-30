@@ -103,7 +103,7 @@ const CMD_CONFIG = {
     upd: { trigger: ['upd'], desc: '发出消息并延时更新', level: 'admin', params: '[起始] [结束] <秒>|<起始> <结束> <秒>', example: '.upd [稍等] [完成] 5' },
     con: { trigger: ['con'], desc: '直接输出', level: 'admin', params: '<文本>', example: '.con 大家好', _alwaysPublic: true },
     eval: { trigger: ['eval', 'code'], desc: '执行代码', level: 'admin', params: '<代码>', example: '.eval 1+1' },
-    welcome: { trigger: ['welcome'], desc: '全局欢迎语管理', level: 'admin', params: 'on/off|add <内容>|del <昵称|识别码>|remove <序号|内容|*识别码>|list|clear', example: '.welcome del sun' },
+    welcome: { trigger: ['welcome'], desc: '全局欢迎语管理', level: 'admin', params: 'on/off|add <内容>|del <昵称|*识别码>|remove <序号|内容>|list|clear', example: '.welcome del sun' },
     wsr: { trigger: ['wsr'], desc: '设置各等级私信支持', level: 'admin', params: '<等级> <on|off>', example: '.wsr normal on', title: 'whisper' },
     ads: { trigger: ['ads'], desc: '定点报时广告', level: 'admin', params: 'on|off|<小时> <内容>|all <内容>', example: '.ads 3 喝口水吧' },
     run: { trigger: ['run'], desc: '批量执行多行命令', level: 'admin', params: '<多行命令>', example: '.run !roll' },
@@ -250,6 +250,22 @@ const mainHandlers = {
         return item && this.ignoreList.has(item);
     },
 
+    rlKey(msg, prefix = '') {
+        const hash = msg.hash || this.onlineUsers.get(msg.nick)?.hash || '';
+        return (prefix ? prefix + ':' : '') + (hash || 'nick:' + msg.nick);
+    },
+
+    toMs(t) {
+        const n = Number(t);
+        if (!Number.isFinite(n) || n <= 0) return 0;
+        return n < 1e11 ? n * 1000 : n;
+    },
+
+    isValidRegex(pattern, flags = 'i') {
+        if (typeof pattern !== 'string' || !pattern) return false;
+        try { new RegExp(pattern, flags); return true; } catch (e) { return false; }
+    },
+
     isFullyIgnored(nick, trip, hash) {
         if (!this.ignoreList.size) return false;
         if (nick && this.ignoreList.has(`*nick:${nick}`)) return true;
@@ -282,6 +298,7 @@ const mainHandlers = {
             if (msg.cmd === 'onlineSet') {
                 this.inChannel = true;
                 this.reconnectAttempts = 0;
+                this.lastChatAt = Date.now();
                 this.updateOnlineUsers(msg);
                 return;
             }
@@ -291,6 +308,7 @@ const mainHandlers = {
             }
             switch (msg.cmd) {
                 case 'chat':
+                    this.lastChatAt = Date.now();
                     if (this.isFullyIgnored(msg.nick, msg.trip, msg.hash)) return;
                     this.recordMessage(msg);
                     if (this.isTempbanned(msg.nick) || this.isBlacklisted(msg.nick) || this.isBlacklisted(msg.trip) || (msg.hash && this.isBlacklisted(msg.hash))) {
@@ -320,6 +338,17 @@ const mainHandlers = {
                     break;
                 case 'onlineAdd':
                     this.onUserJoin(msg);
+                    break;
+                case 'emote':
+                    this.lastChatAt = Date.now();
+                    this.recordMessage(msg, true);
+                    if (msg.nick) this.updateUserActivity(msg.nick);
+                    break;
+                case 'updateUser':
+                    this.onUserUpdate(msg);
+                    break;
+                case 'updateMessage':
+                    this.onMessageUpdate(msg);
                     break;
                 case 'info':
                     if (msg.type === 'whisper') this.handleWhisper(msg);
@@ -369,7 +398,7 @@ const mainHandlers = {
                     hash: u.hash,
                     color: u.color || false,
                     level: u.level,
-                    joinTime: u.time ? u.time * 1000 : Date.now()
+                    joinTime: this.toMs(u.time) || Date.now()
                 });
                 if (u.isme && typeof u.level === 'number') this.botLevel = u.level;
                 if (!this.coreMode) {
@@ -386,7 +415,7 @@ const mainHandlers = {
                         this.markDirty();
                     }
                     if (u.nick !== CONFIG.botNick) {
-                        this.userJoinTime.set(u.nick, u.time ? u.time * 1000 : Date.now());
+                        this.userJoinTime.set(u.nick, this.toMs(u.time) || Date.now());
                     }
                     if (u.nick !== CONFIG.botNick && u.color) {
                         this.joinColor.set(u.nick, u.color);
@@ -422,7 +451,7 @@ const mainHandlers = {
                     trip: userTrip,
                     hash: data.hash,
                     color: data.color || false,
-                    joinTime: data.time * 1000
+                    joinTime: this.toMs(data.time) || Date.now()
                 });
                 return;
             }
@@ -438,11 +467,11 @@ const mainHandlers = {
                 trip: userTrip,
                 hash: data.hash,
                 color: data.color || false,
-                joinTime: data.time * 1000
+                joinTime: this.toMs(data.time) || Date.now()
             });
             if (this.coreMode) return;
             if (nick !== CONFIG.botNick) {
-                this.userJoinTime.set(nick, data.time ? data.time * 1000 : Date.now());
+                this.userJoinTime.set(nick, this.toMs(data.time) || Date.now());
                 this.userActivity.set(nick, 0);
             }
             if (nick !== CONFIG.botNick && data.color) {
@@ -501,7 +530,17 @@ const mainHandlers = {
             }
             this.deliverLeftMessages(nick, userTrip);
             this.lastSeen.set(nick, { time: Date.now(), msg: '__join__', trip: userTrip, nick, hash: userHash });
-            if (userTrip) this.lastSeen.set('*' + userTrip, { time: Date.now(), msg: '__join__', trip: userTrip, nick, hash: userHash });
+            if (this.lastSeen.size > CONFIG.CONST.maxLastSeen) {
+                const firstKey = this.lastSeen.keys().next().value;
+                this.lastSeen.delete(firstKey);
+            }
+            if (userTrip) {
+                this.lastSeen.set('*' + userTrip, { time: Date.now(), msg: '__join__', trip: userTrip, nick, hash: userHash });
+                if (this.lastSeen.size > CONFIG.CONST.maxLastSeen) {
+                    const firstKey = this.lastSeen.keys().next().value;
+                    this.lastSeen.delete(firstKey);
+                }
+            }
             if (this.fakemotdEnabled && this.fakemotdContent) {
                 this.sendWhisper(nick, this.fakemotdContent, true);
             }
@@ -573,6 +612,50 @@ const mainHandlers = {
         } catch (err) {}
     },
 
+    onUserUpdate(msg) {
+        try {
+            const nick = msg.nick;
+            if (!nick) return;
+            if (nick === CONFIG.botNick && typeof msg.level === 'number') {
+                this.botLevel = msg.level;
+            }
+            const info = this.onlineUsers.get(nick);
+            if (!info) return;
+            if (typeof msg.trip === 'string') info.trip = msg.trip;
+            if (typeof msg.hash === 'string' && msg.hash) info.hash = msg.hash;
+            if (typeof msg.level === 'number') info.level = msg.level;
+            if (msg.color !== undefined) info.color = msg.color || false;
+        } catch (err) {}
+    },
+
+    onMessageUpdate(msg) {
+        try {
+            const customId = msg.customId;
+            if (typeof customId !== 'string' || !customId) return;
+            const text = typeof msg.text === 'string' ? msg.text : '';
+            const cleared = msg.mode === 'complete' || text === '\u0000';
+            for (let i = this.messageHistory.length - 1; i >= 0; i--) {
+                const rec = this.messageHistory[i];
+                if (rec.customId !== customId) continue;
+                if (cleared) {
+                    this.messageHistory.splice(i, 1);
+                    this.messageIdMap.delete(rec.id);
+                } else if (text) {
+                    rec.text = text;
+                } else {
+                    return;
+                }
+                this.markDirty();
+                return;
+            }
+        } catch (err) {}
+    },
+
+    historyText(m) {
+        if (!m) return '';
+        return m.emote ? '/me ' + m.text : m.text;
+    },
+
     handleChatMessage(msg) {
         try {
             const text = msg.text.trim();
@@ -592,7 +675,7 @@ const mainHandlers = {
                         }
                     } catch(e) {}
                 }
-                if (!isWhitelisted && !isMod && this.rl.frisk(msg.nick, 1 + text.length/512)) {
+                if (!isWhitelisted && !isMod && this.rl.frisk(this.rlKey(msg), 1 + text.length/512)) {
                     this.kickUser(msg.nick);
                     return;
                 }
@@ -691,9 +774,9 @@ const mainHandlers = {
         }
     },
 
-    recordMessage(msg) {
+    recordMessage(msg, isEmote = false) {
         try {
-            if (msg.cmd !== 'chat') return;
+            if (!isEmote && msg.cmd !== 'chat') return;
             if (this.coreMode) return;
             if (this.historyEnabled === false) return;
             const nick = msg.nick;
@@ -704,7 +787,14 @@ const mainHandlers = {
                 this.kickUser(nick);
                 return;
             }
-            const obj = { id: this.nextMessageId++, nick, trip, text: msg.text, time: Date.now() };
+            let text = msg.text;
+            if (isEmote) {
+                const atPrefix = `@${nick}`;
+                text = text.startsWith(atPrefix) ? text.slice(atPrefix.length).replace(/^\s+/, '') : text;
+            }
+            const obj = { id: this.nextMessageId++, nick, trip, text, time: Date.now() };
+            if (isEmote) obj.emote = true;
+            if (typeof msg.customId === 'string' && msg.customId) obj.customId = msg.customId;
             this.messageHistory.push(obj);
             this.messageIdMap.set(obj.id, obj);
             this.recentMsgTimestamps.push(Date.now());
@@ -746,7 +836,7 @@ const mainHandlers = {
 
     handleAFKMention(msg) {
         try {
-            if (this.isMuted || !msg) return;
+            if (this.isMuted || !this.afkMention || !msg) return;
             const mentionReg = /@(\w+)/g;
             let match;
             while ((match = mentionReg.exec(msg.text)) !== null) {
@@ -842,6 +932,7 @@ const mainHandlers = {
             if (text.startsWith(CONFIG.CONST.NORMAL_PREFIX)) return;
             const candidates = this.messageHistory.filter(m =>
                 m.nick !== CONFIG.botNick &&
+                !m.emote &&
                 !m.text.startsWith(CONFIG.CONST.NORMAL_PREFIX) &&
                 m.text.trim().length > 0
             );
@@ -856,9 +947,10 @@ const mainHandlers = {
         this.scheduledIntervals.push(setInterval(() => this.checkTempbanExpire(), 60000));
         this.scheduledIntervals.push(setInterval(() => this.checkPlanTasks(), 30000));
         this.scheduledIntervals.push(setInterval(() => this.checkUserCountdowns(), 30000));
+        this.scheduledIntervals.push(setInterval(() => this.checkIdleChat(), CONFIG.CONST.idleCheckInterval));
         this.scheduleHourly();
         this.ifTimer = setInterval(() => {
-            if (this.isMuted || this.coreMode) return;
+            if (this.isMuted || this.coreMode || !this.ifAuto) return;
             for (const rule of this.ifRules) {
                 if (!rule.trigger && Math.random() <= rule.probability / 100) this.sendChat(rule.reply);
             }
@@ -902,8 +994,9 @@ const mainHandlers = {
                     }
                 }
                 if (Math.random() < 0.15) {
-                    if (this.includeYiyan && Math.random() > 0.5) this.handleYiyan();
-                    else if (CONFIG.CONST.periodic.includeStyle) {
+                    const pickYiyan = Math.random() > 0.5;
+                    if (pickYiyan && this.includeYiyan) this.handleYiyan();
+                    else if (!pickYiyan && this.includeStyle) {
                         const reply = this.pickStyleReply('smallTalkReplies');
                         if (reply) this.sendChat(reply);
                     }
@@ -912,6 +1005,17 @@ const mainHandlers = {
             this.periodicTimeoutId = null;
             this.schedulePeriodicPost();
         }, delay);
+    },
+
+    checkIdleChat() {
+        try {
+            if (!this.idleReply) return;
+            if (this.isMuted || this.coreMode || !this.inChannel) return;
+            if (Date.now() - (this.lastChatAt || 0) < CONFIG.CONST.idleMinutes * 60000) return;
+            if (Math.random() > 0.05) return;
+            const reply = this.pickStyleReply('idleReplies');
+            if (reply) this.sendChat(reply);
+        } catch (err) {}
     },
 
     checkMuteExpire() {
@@ -963,10 +1067,6 @@ const mainHandlers = {
                 const activeUsers = new Set(this.messageHistory.slice(-1000).map(m => m.nick));
                 for (const [user] of this.userActivity.entries()) {
                     if (!activeUsers.has(user)) { this.userActivity.delete(user); changed = true; }
-                }
-                const weekAgo = Date.now() - 7 * 24 * 3600 * 1000;
-                for (const [key, val] of this.lastSeen.entries()) {
-                    if (val.time < weekAgo) { this.lastSeen.delete(key); changed = true; }
                 }
                 if (this.historyKeepMsgDays > 0) {
                     const hBefore = this.messageHistory.length;
@@ -1067,7 +1167,7 @@ const mainHandlers = {
                 if (this.noPermHint !== false) this.sendReply('无权限');
                 return;
             }
-            if (!this.hasAdminAuth(msg) && this.rl.frisk(`cmd:${msg.nick}`, 1)) {
+            if (!this.hasAdminAuth(msg) && this.rl.frisk(this.rlKey(msg, 'cmd'), 1)) {
                 return;
             }
             const prevTarget = this._replyTarget;
@@ -1329,7 +1429,7 @@ const mainHandlers = {
             const replyRoute = (text) => {
                 if (this._forceReplyMode === 'public') { this.sendChat(String(text).replace(new RegExp('^' + escapeRegExpLocal(this.placeholder) + '\\n'), '')); return; }
                 if (this._forceReplyMode === 'private') { this.sendWhisper(this._replyTarget || msg.nick, text); return; }
-                if (params.length) { this.sendWhisper(msg.nick, text); return; }
+                if (params.length || msg._whisper) { this.sendWhisper(msg.nick, text); return; }
                 this.sendChat(text);
             };
             if (params.length === 0) {
@@ -1356,7 +1456,7 @@ const mainHandlers = {
                 return;
             }
             const lines = slice.map(m => {
-                const truncated = this.truncate(m.text, CONFIG.CONST.msgTruncateLen, m.id);
+                const truncated = this.truncate(this.historyText(m), CONFIG.CONST.msgTruncateLen, m.id);
                 return `#${m.id}: ${m.nick}: ${truncated}`;
             });
             replyRoute(`消息 (${start+1}-${end}):\n${lines.join('\n')}`);
@@ -1387,7 +1487,7 @@ const mainHandlers = {
             const top3 = [...this.userActivity.entries()]
                 .sort((a,b) => b[1]-a[1]).slice(0,3)
                 .map(([n,c]) => `${n}: ${c}条`).join(', ');
-            this.sendReply(`统计\n在线: ${this.onlineUsers.size}人\n活跃TOP3: ${top3 || '无'}\n时间: ${this.formatTime(Date.now())}`);
+            this.sendReply(`**统计**\n在线: ${this.onlineUsers.size}人\n活跃TOP3: ${top3 || '无'}\n时间: ${this.formatTime(Date.now())}`);
         } catch (err) {
             this.sendReply('统计失败');
         }
@@ -1539,9 +1639,13 @@ const mainHandlers = {
                 return;
             }
             const online = this.onlineUsers.get(nick);
-            const hash = (online && online.hash) || (this.lastSeen.get(nick) || {}).hash || '';
+            if (!online) {
+                this.sendReply(`${nick} 不在线`);
+                return;
+            }
+            const hash = online.hash || '';
             if (!hash) {
-                this.sendReply(`${nick} 不在线或暂无hash记录`);
+                this.sendReply(`${nick} 暂无hash记录`);
                 return;
             }
             const nicks = this.hashHistory.get(hash);
@@ -1728,19 +1832,7 @@ const mainHandlers = {
             } else if (sub === 'remove') {
                 const arg = params[1];
                 if (!arg) {
-                    this.sendReply('格式: .welcome remove <序号|内容|*识别码>');
-                    return;
-                }
-                if (arg.startsWith('*')) {
-                    const trip = arg.slice(1);
-                    if (/^[A-Za-z0-9+/]{6}$/.test(trip) && this.welcomeMessages.has(trip)) {
-                        this.welcomeMessages.delete(trip);
-                        this.markDirty();
-                        this.addAdminLog('rm-welcome', trip, msg.trip || msg.nick);
-                        this.sendReply('已取消');
-                    } else {
-                        this.sendReply('未找到');
-                    }
+                    this.sendReply('格式: .welcome remove <序号|内容>');
                     return;
                 }
                 let removed = null;
@@ -1762,22 +1854,26 @@ const mainHandlers = {
             } else if (sub === 'del') {
                 const arg = (params[1] || '').trim();
                 if (!arg) {
-                    this.sendReply('格式: .welcome del <昵称|识别码>');
+                    this.sendReply('格式: .welcome del <昵称|*识别码>');
                     return;
                 }
+                const isTripArg = arg.startsWith('*');
                 const bare = this.stripAt(arg).replace(/^\*/, '');
-                const isTrip = /^[A-Za-z0-9+/]{6}$/.test(bare);
+                const isTrip = isTripArg && /^[A-Za-z0-9+/]{6}$/.test(bare);
                 let trip = isTrip ? bare : '';
-                if (!isTrip) {
+                if (!isTripArg) {
                     trip = this.onlineUsers.get(bare)?.trip || this.nickTripBinding.get(bare) || '';
                     if (!trip) {
                         const bound = [...this.lastSeen.entries()].find(([k, v]) => !k.startsWith('*') && k.toLowerCase() === bare.toLowerCase());
                         trip = bound ? (bound[1].trip || '') : '';
                     }
                     if (!trip) {
-                        this.sendReply(`无法确定 ${arg} 的识别码，请直接提供6位识别码`);
+                        this.sendReply(`无法确定 ${arg} 的识别码，请使用 .welcome del *识别码`);
                         return;
                     }
+                } else if (!isTrip) {
+                    this.sendReply('无效的识别码格式');
+                    return;
                 }
                 if (this.welcomeMessages.delete(trip)) {
                     this.markDirty();
@@ -1828,17 +1924,7 @@ const mainHandlers = {
             if (isTrip) {
                 displayTarget = data.nick || this.findNickByTrip(trip) || `识别码${trip}`;
             }
-            const diff = Date.now() - data.time;
-            const days = Math.floor(diff / 86400000);
-            const hours = Math.floor((diff % 86400000) / 3600000);
-            const minutes = Math.floor((diff % 3600000) / 60000);
-            const seconds = Math.floor((diff % 60000) / 1000);
-            const parts = [];
-            if (days > 0) parts.push(`${days}天`);
-            if (hours > 0) parts.push(`${hours}时`);
-            if (minutes > 0) parts.push(`${minutes}分`);
-            if (seconds > 0 || parts.length === 0) parts.push(`${seconds}秒`);
-            const timeAgo = parts.join('');
+            const timeAgo = this.timeAgo(data.time);
             const dateStr = this.formatTime(data.time);
             const tripInfo = data.trip ? `\n他的tripcode为${data.trip}` : '';
             const msgPart = data.msg === '__join__' ? '他加入了。' : `他说了: ${data.msg.slice(0, 100)}`;
@@ -1868,21 +1954,19 @@ const mainHandlers = {
             }
             const joinTime = this.userJoinTime.get(target) || online.joinTime || 0;
             const activity = this.userActivity.get(target) || 0;
-            let text = `**${target}**\n`;
+            const lines = [];
             if (joinTime) {
-                const joinedAgo = Date.now() - joinTime;
-                let joinedStr;
-                if (joinedAgo >= 86400000) joinedStr = `${Math.floor(joinedAgo/86400000)}天`;
-                else if (joinedAgo >= 3600000) joinedStr = `${Math.floor(joinedAgo/3600000)}小时`;
-                else joinedStr = `${Math.floor(joinedAgo/60000)}分钟`;
-                text += `加入: ${this.formatTime(joinTime)} (${joinedStr}前)\n`;
+                lines.push(`加入: ${this.formatTime(joinTime)} (距现在${this.timeAgo(joinTime)})`);
             }
-            text += `发言: ${activity}次\n`;
-            if (joinTime) {
-                const hours = (Date.now() - joinTime) / 3600000;
-                text += `频率: ${hours > 0 ? (activity / hours).toFixed(1) : 'N/A'}条/小时\n`;
+            if (activity > 0) {
+                lines.push(`发言: ${activity}次`);
+                if (joinTime) {
+                    const hours = (Date.now() - joinTime) / 3600000;
+                    lines.push(`频率: ${hours > 0 ? (activity / hours).toFixed(1) : 'N/A'}条/小时`);
+                }
             }
-            this.sendReply(text);
+            if (!lines.length) return;
+            this.sendReply([`**${target}**`, ...lines].join('\n'));
         } catch (err) {
             this.sendReply('分析失败');
         }
@@ -1931,7 +2015,7 @@ const mainHandlers = {
             }
             const slice = this.messageHistory.slice(start, end);
             const lines = slice.map(m => {
-                const truncated = this.truncate(m.text, CONFIG.CONST.msgTruncateLen, m.id);
+                const truncated = this.truncate(this.historyText(m), CONFIG.CONST.msgTruncateLen, m.id);
                 return `${m.nick}: ${truncated}`;
             });
             this.sendWhisper(msg.nick, `消息 (${start+1}-${end}):\n${lines.join('\n')}`, true);
@@ -2151,18 +2235,32 @@ const mainHandlers = {
                 return `${m.fromNick}${m.fromTrip ? '#' + m.fromTrip : ''} 在 ${this.formatTime(m.time)} 使用 ${via} 给你留言: ${m.content}`;
             });
             const MAX_LEN = 400;
-            let buf = `您有 ${msgs.length} 条留言:`;
-            for (const line of lines) {
-                if (buf.length + line.length + 1 > MAX_LEN) {
-                    this.sendWhisper(nick, buf, true);
-                    buf = line;
+            const chunks = [];
+            let cur = [];
+            let curLen = 0;
+            for (let i = 0; i < lines.length; i++) {
+                const add = (cur.length ? 1 : 0) + lines[i].length;
+                if (cur.length && curLen + add > MAX_LEN) {
+                    chunks.push(cur);
+                    cur = [i];
+                    curLen = lines[i].length;
                 } else {
-                    buf += '\n' + line;
+                    cur.push(i);
+                    curLen += add;
                 }
             }
-            if (buf && this.ws && this.ws.readyState === WebSocket.OPEN) this.sendWhisper(nick, buf, true);
-            else return;
-            this.leftMessages = this.leftMessages.filter(m => !msgs.includes(m));
+            if (cur.length) chunks.push(cur);
+
+            const delivered = [];
+            for (const idxs of chunks) {
+                const head = delivered.length ? '' : `您有 ${msgs.length} 条留言:\n`;
+                const text = head + idxs.map(i => lines[i]).join('\n');
+                if (!this.sendWhisper(nick, text, true)) break;
+                delivered.push(...idxs);
+            }
+            if (!delivered.length) return;
+            const sent = new Set(delivered.map(i => msgs[i]));
+            this.leftMessages = this.leftMessages.filter(m => !sent.has(m));
             this.markDirty();
         } catch (err) {}
     },
@@ -2179,7 +2277,7 @@ const mainHandlers = {
                 this.sendWhisper(msg.nick, `未找到消息 #${id}`);
                 return;
             }
-            this.sendWhisper(msg.nick, `#${id}: ${record.nick}: ${record.text}`);
+            this.sendWhisper(msg.nick, `#${id}: ${record.nick}: ${this.historyText(record)}`);
         } catch (err) {
             this.sendWhisper(msg.nick, '查询失败');
         }
@@ -2381,14 +2479,16 @@ const mainHandlers = {
                 return;
             }
             const target = params[0] ? this.stripAt(params[0]) : null;
-            let kicked = [];
-            for (const [nick, data] of this.onlineUsers.entries()) {
-                if (nick === sender) continue;
-                if (target && nick !== target) continue;
-                if (data.trip === trip) {
-                    this.kickUser(nick);
-                    kicked.push(nick);
-                }
+            const candidates = [...this.onlineUsers.entries()]
+                .filter(([nick, data]) => nick !== sender && data.trip === trip)
+                .map(([nick]) => nick);
+            const selected = target
+                ? candidates.filter(n => n === target)
+                : (candidates.length ? [candidates[Math.floor(Math.random() * candidates.length)]] : []);
+            const kicked = [];
+            for (const nick of selected) {
+                this.kickUser(nick);
+                kicked.push(nick);
             }
             if (kicked.length) this.sendReply(`已踢出: ${kicked.join(', ')}`);
             else this.sendReply('未找到');
@@ -2839,7 +2939,8 @@ const mainHandlers = {
             }
             const t = this.getLocalTime();
             const hour = t.getUTCHours();
-            const ampm = hour > 12 ? `${hour - 13}-${hour - 12} p.m.` : `${(hour - 1) % 12}-${hour} a.m.`;
+            const pastHour = (hour + 23) % 24;
+            const ampm = `${pastHour % 12 === 0 ? 12 : pastHour % 12} ${pastHour >= 12 ? 'p.m.' : 'a.m.'}`;
             lines.push('');
             lines.push('---');
             lines.push(`Activity past hour / today (${ampm} / ${MONTH_NAMES[t.getUTCMonth()]} ${t.getUTCDate()}):`);
@@ -2881,6 +2982,10 @@ const mainHandlers = {
             const word = params.join(' ');
             if (!word) {
                 this.sendUsage('addword', msg, CONFIG.CONST.MOD_PREFIX);
+                return;
+            }
+            if (!this.isValidRegex(word)) {
+                this.sendReply(`无效的正则: ${word}`);
                 return;
             }
             this.banWords.push(word);
@@ -3481,6 +3586,10 @@ const mainHandlers = {
                         this.sendReply('正则不能为空: .if addz [正则] [回复] <概率>');
                         return;
                     }
+                    if (!this.isValidRegex(regex)) {
+                        this.sendReply(`无效的正则: ${regex}`);
+                        return;
+                    }
                     this.ifRules.push({ trigger: regex, reply: replyZ, probability: probZ, isRegex: true, id: Date.now() });
                     this.markDirty();
                     this.sendReply(`已添加: [${regex || '空'}] -> [${replyZ}] (${probZ}%) [正则]`);
@@ -3842,14 +3951,19 @@ const mainHandlers = {
 
     handleSet(msg, params) {
         try {
+            const keyList = '格式: .set <键> <值>\n键: placeholder|columns|repo|hour|question|hint\nyiyan|style|idle|ifauto|afk|rank|noperm|pw|action';
+            const usage = (text) => {
+                if (msg._whisper) this.sendWhisper(msg.nick, text, true);
+                else this.sendReply(text);
+            };
             if (!params.length) {
-                this.sendReply('格式: .set <键> <值>\n键: placeholder|columns|repo|hour|question|hint|yiyan|rank|noperm|password|action');
+                usage(keyList);
                 return;
             }
             const key = params[0].toLowerCase();
             const val = params.slice(1).join(' ');
             if (!val && key !== 'rank') {
-                this.sendReply('格式: .set <键> <值>\n键: placeholder|columns|repo|hour|question|hint|yiyan|rank|noperm|password|action');
+                usage(keyList);
                 return;
             }
             switch (key) {
@@ -3863,11 +3977,11 @@ const mainHandlers = {
                         this.sendReply(`无权限提示已${this.noPermHint ? '开启' : '关闭'}`);
                     } else this.sendReply('noperm 需为 on|off');
                     break;
-                case 'password':
+                case 'pw':
                     if (val === 'on' || val === 'off') {
                         this.passwordEnabled = val === 'on';
                         this.sendReply(`公屏密码支持已${this.passwordEnabled ? '开启' : '关闭'}`);
-                    } else this.sendReply('password 需为 on|off');
+                    } else this.sendReply('pw 需为 on|off');
                     break;
                 case 'action':
                     this.adminAction = val;
@@ -3878,6 +3992,30 @@ const mainHandlers = {
                         this.includeYiyan = val === 'on';
                         this.sendReply(`随机一言已${this.includeYiyan ? '开启' : '关闭'}`);
                     } else this.sendReply('yiyan 需为 on|off');
+                    break;
+                case 'style':
+                    if (val === 'on' || val === 'off') {
+                        this.includeStyle = val === 'on';
+                        this.sendReply(`小脑已${this.includeStyle ? '开启' : '关闭'}`);
+                    } else this.sendReply('style 需为 on|off');
+                    break;
+                case 'idle':
+                    if (val === 'on' || val === 'off') {
+                        this.idleReply = val === 'on';
+                        this.sendReply(`冷场搭话已${this.idleReply ? '开启' : '关闭'}`);
+                    } else this.sendReply('idle 需为 on|off');
+                    break;
+                case 'ifauto':
+                    if (val === 'on' || val === 'off') {
+                        this.ifAuto = val === 'on';
+                        this.sendReply(`.if 空触发定时发言已${this.ifAuto ? '开启' : '关闭'}`);
+                    } else this.sendReply('ifauto 需为 on|off');
+                    break;
+                case 'afk':
+                    if (val === 'on' || val === 'off') {
+                        this.afkMention = val === 'on';
+                        this.sendReply(`AFK @提醒已${this.afkMention ? '开启' : '关闭'}`);
+                    } else this.sendReply('afk 需为 on|off');
                     break;
                 case 'columns': {
                     const n = parseInt(val);
@@ -3925,7 +4063,7 @@ const mainHandlers = {
                     break;
                 }
                 default:
-                    this.sendReply(`未知键: ${key}\n键: placeholder|columns|repo|hour|question|hint|yiyan|rank|noperm|password|action`);
+                    usage(`未知键: ${key}\n键: placeholder|columns|repo|hour|question|hint\nyiyan|style|idle|ifauto|afk|rank|noperm|pw|action`);
                     return;
             }
             this.markDirty();
@@ -4431,6 +4569,10 @@ const mainHandlers = {
                     this.sendReply(`格式: .${sub} [${name}] [回复] 或 .${sub} <${name}> <回复>`);
                     return;
                 }
+                if (!this.isValidRegex(pattern)) {
+                    this.sendReply(`无效的正则: ${pattern}`);
+                    return;
+                }
                 let existing = this.replyRules.find(r => r.pattern === pattern && !!r.isRegex === isRegex);
                 if (existing) {
                     existing.replies.push(replyText);
@@ -4690,6 +4832,10 @@ const mainHandlers = {
             this.questionReply = true;
             this.opHint = true;
             this.includeYiyan = true;
+            this.includeStyle = true;
+            this.idleReply = true;
+            this.ifAuto = true;
+            this.afkMention = true;
             this.coreMode = false;
             this.motdEnabled = false;
             this.motdLines = [];
@@ -4729,12 +4875,12 @@ const mainHandlers = {
             for (const c of this.cloneClients.values()) c.close();
             this.cloneClients.clear();
             this.adminList = keepAdmin;
-            for (const f of fs.readdirSync(DATA_DIR)) {
-                const fp = path.join(DATA_DIR, f);
-                if (fs.statSync(fp).isFile() && f.endsWith('.json')) {
-                    try { fs.unlinkSync(fp); } catch (e) {}
+            try {
+                for (const entry of fs.readdirSync(DATA_DIR, { withFileTypes: true })) {
+                    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+                    try { fs.unlinkSync(path.join(DATA_DIR, entry.name)); } catch (e) {}
                 }
-            }
+            } catch (e) {}
             for (const f of store.listFiles('history')) {
                 try { fs.unlinkSync(path.join(HISTORY_DIR, f)); } catch (e) {}
             }
@@ -4911,6 +5057,7 @@ const mainHandlers = {
         try {
             if (!this.userCountdowns || !this.userCountdowns.size) return;
             const now = Date.now();
+            let fired = false;
             for (const [nick, cd] of this.userCountdowns.entries()) {
                 if (cd.triggerTime <= now) {
                     const overdue = now - cd.triggerTime;
@@ -4922,9 +5069,10 @@ const mainHandlers = {
                     text += `，不要忘了${cd.reason || '...'}`;
                     this.sendChat(text);
                     this.userCountdowns.delete(nick);
+                    fired = true;
                 }
             }
-            this.markDirty();
+            if (fired) this.markDirty();
         } catch (err) {}
     },
 
