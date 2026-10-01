@@ -24,14 +24,14 @@ module.exports = {
         return this.sendWSMessage({ cmd: 'chat', text, clientId: this.clientId }, false, ignoreMute);
     },
 
-    sendReply(text) {
+    sendReply(text, noPlaceholder = false) {
         if (!text) return;
         if (this._runCollections) {
             this._runCollections.pub.push(String(text));
         } else if (this._forceReplyMode === 'public') {
             this.sendChat(String(text).replace(new RegExp('^' + escapeRegExp(this.placeholder) + '\\n'), ''));
         } else if (this._replyTarget) {
-            this.sendWhisper(this._replyTarget, text);
+            this.sendWhisper(this._replyTarget, text, noPlaceholder);
         } else {
             this.sendChat(text);
         }
