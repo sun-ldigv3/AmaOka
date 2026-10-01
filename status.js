@@ -36,6 +36,7 @@ const CONFIG = {
         hashPageSize: 10,
         msgTruncateLen: 100,
         primeMaxLen: 15,
+        pasteTimeout: 15000,
         maxWordCount: 10000,
         maxLastSeen: 10000,
         maxHashNickCount: 100,
@@ -386,6 +387,10 @@ const bot = {
     noPermHint: true,
     passwordEnabled: true,
     adminAction: '(｀へ´)',
+    uploadEnabled: false,
+    uploadUrl: 'https://dpaste.org/api/',
+    uploadMaxLines: 200,
+    uploadExpiry: '1 week',
     historyEnabled: true,
     logEnabled: true,
     autoExportDays: 0,
@@ -625,6 +630,10 @@ const bot = {
                 noPermHint: this.noPermHint,
                 passwordEnabled: this.passwordEnabled,
                 adminAction: this.adminAction,
+            uploadEnabled: this.uploadEnabled,
+            uploadUrl: this.uploadUrl,
+            uploadMaxLines: this.uploadMaxLines,
+            uploadExpiry: this.uploadExpiry,
                 replyEnabled: this.replyEnabled,
                 replyProb: this.replyProb,
                 replyDelay: this.replyDelay,
@@ -737,6 +746,10 @@ const bot = {
             if (typeof settings.noPermHint === 'boolean') this.noPermHint = settings.noPermHint;
             if (typeof settings.passwordEnabled === 'boolean') this.passwordEnabled = settings.passwordEnabled;
             if (typeof settings.adminAction === 'string') this.adminAction = settings.adminAction;
+            if (typeof settings.uploadEnabled === 'boolean') this.uploadEnabled = settings.uploadEnabled;
+            if (typeof settings.uploadUrl === 'string') this.uploadUrl = settings.uploadUrl;
+            if (typeof settings.uploadMaxLines === 'number') this.uploadMaxLines = settings.uploadMaxLines;
+            if (typeof settings.uploadExpiry === 'string') this.uploadExpiry = settings.uploadExpiry;
             if (typeof settings.replyEnabled === 'boolean') this.replyEnabled = settings.replyEnabled;
             if (typeof settings.replyProb === 'number') this.replyProb = settings.replyProb;
             if (typeof settings.replyDelay === 'number') this.replyDelay = settings.replyDelay;
