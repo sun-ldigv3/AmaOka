@@ -62,6 +62,7 @@ const CMD_CONFIG = {
     save: { trigger: ['save'], desc: '导出聊天记录', level: 'mod', params: '', example: ';save' },
     clear: { trigger: ['clear'], desc: '清空聊天记录', level: 'mod', params: '', example: ';clear' },
     whitelist: { trigger: ['whitelist', 'wht'], desc: '白名单管理', level: 'mod', params: '<子命令> [trip]', example: ';whitelist list' },
+    force: { trigger: ['force'], desc: '强制设置自己的颜色/后缀', level: 'mod', params: 'color <十六进制>|flair <文字>', example: ';force color ffffff' },
     log: { trigger: ['log'], desc: '查看管理日志', level: 'mod', params: '[数量]|off|on|clear', example: ';log 10' },
     // Admin 命令
     helpadmin: { trigger: ['helpadmin', 'ha'], desc: '查看管理员命令', level: 'admin', params: '[命令名]', example: '.helpadmin eval' },
@@ -105,7 +106,7 @@ const CMD_CONFIG = {
     eval: { trigger: ['eval', 'code'], desc: '执行代码', level: 'admin', params: '<代码>', example: '.eval 1+1' },
     welcome: { trigger: ['welcome'], desc: '全局欢迎语管理', level: 'admin', params: 'on/off|add <内容>|del <昵称|*识别码>|remove <序号|内容>|list|clear', example: '.welcome del sun' },
     wsr: { trigger: ['wsr'], desc: '设置各等级私信支持', level: 'admin', params: '<等级> <on|off>', example: '.wsr normal on', title: 'whisper' },
-    ads: { trigger: ['ads'], desc: '定点报时广告', level: 'admin', params: 'on|off|<小时> <内容>|all <内容>', example: '.ads 3 喝口水吧' },
+    ads: { trigger: ['ads'], desc: '定点报时广告', level: 'admin', params: 'on|off|<小时> [set] <内容>|all [set] <内容>', example: '.ads 3 喝口水吧' },
     run: { trigger: ['run'], desc: '批量执行多行命令', level: 'admin', params: '<多行命令>', example: '.run !roll' },
     forcepub: { trigger: ['o', 'forcepub'], desc: '强制公屏回复下一条命令', level: 'admin', params: '<命令>', example: '.o !roll' },
     forcepriv: { trigger: ['x', 'forcepriv'], desc: '强制私信回复下一条命令', level: 'admin', params: '<命令>', example: '.x !roll' },
@@ -386,15 +387,6 @@ const mainHandlers = {
                         this.kickUser(msg.nick);
                         return;
                     }
-                    if (this.modMode && !this.hasModAuth(msg) && msg.nick !== CONFIG.botNick) {
-                        const text = msg.text.trim();
-                        const prefixes = [CONFIG.CONST.NORMAL_PREFIX, CONFIG.CONST.MOD_PREFIX, CONFIG.CONST.ADMIN_PREFIX];
-                        if (prefixes.some(p => text.startsWith(p))) {
-                            const [cmdTrigger] = text.split(/\s+/);
-                            const cmdItem = this.cmdMap.get(cmdTrigger);
-                            if (cmdItem && cmdItem.level !== 'normal') return;
-                        }
-                    }
                     if (this.isMuted) {
                         const trimmed = msg.text.trim();
                         const isTalkOn = trimmed === `${CONFIG.CONST.ADMIN_PREFIX}talk on`;
@@ -514,7 +506,6 @@ const mainHandlers = {
             const userHash = data.hash || '';
             if (this.isTempbanned(nick) || this.isBlacklisted(nick) || this.isBlacklisted(data.trip) || (data.hash && this.isBlacklisted(data.hash))) {
                 this.kickUser(nick);
-                if (this.opHint) this.sendChat(`${nick} 已被封禁`);
                 return;
             }
             if (this.isFullyIgnored(nick, userTrip, userHash)) {
@@ -582,7 +573,7 @@ const mainHandlers = {
                 if (!this._joinFloodNotice || now - this._joinFloodNotice > 60000) {
                     this._joinFloodNotice = now;
                     console.log(`[入房限流] ${joinKey} 触发，已跳过欢迎语`);
-                    if (this.opHint) this.sendChat('入房过于频繁，已暂时跳过欢迎语');
+                    this.sendChat('入房过于频繁，已暂时跳过欢迎语');
                 }
             }
             if (this.welcomeEnabled && !joinFlooded) {
@@ -1237,9 +1228,15 @@ const mainHandlers = {
                 if (this.noPermHint !== false) this.sendReply('无权限');
                 return;
             }
-            if (cmdItem.level === 'mod' && !this.hasModAuth(msg)) {
-                if (this.noPermHint !== false) this.sendReply('无权限');
-                return;
+            if (cmdItem.level === 'mod') {
+                if (!this.hasModAuth(msg)) {
+                    if (this.noPermHint !== false) this.sendReply('无权限');
+                    return;
+                }
+                if (!this.hasAdminAuth(msg) && !this.modMode) {
+                    this.sendReply('协管模式未开启');
+                    return;
+                }
             }
             if (!this.hasAdminAuth(msg) && this.rl.frisk(this.rlKey(msg, 'cmd'), 1)) {
                 return;
@@ -1960,17 +1957,25 @@ const mainHandlers = {
                     this.sendReply(`未找到识别码 ${trip} 的个人欢迎语`);
                 }
             } else if (sub === 'list') {
-                const trips = [...this.welcomeMessages.keys()];
-                let out = '';
-                if (trips.length) {
-                    out += `个人欢迎语 (${trips.length}):\n` + trips.map((t, i) => `[${i + 1}] ${t}: ${this.welcomeMessages.get(t)}`).join('\n');
+                const list = this.globalWelcome;
+                if (!list.length) {
+                    this.sendReply('暂无全局欢迎语');
+                    return;
                 }
-                if (this.globalWelcome.length) {
-                    const list = this.globalWelcome.map((t, i) => `[${i + 1}] ${t}`).join('\n');
-                    out += (out ? '\n' : '') + `全局欢迎语 (${this.globalWelcome.length}): \n${list}`;
+                const pageArg = (params[1] || '').toLowerCase();
+                if (pageArg === 'all') {
+                    this.sendReply(`全局欢迎语 (${list.length}):\n` + list.map((t, i) => `[${i + 1}] ${t}`).join('\n'));
+                    return;
                 }
-                if (!out) this.sendReply('暂无欢迎语');
-                else this.sendReply(out);
+                const pageSize = 10;
+                const total = Math.ceil(list.length / pageSize);
+                const page = Math.min(Math.max(1, parseInt(pageArg) || 1), total);
+                const start = (page - 1) * pageSize;
+                const pageItems = list.slice(start, start + pageSize);
+                const body = pageItems.map((t, i) => `[${start + i + 1}] ${t}`).join('\n');
+                let out = `全局欢迎语 (${list.length}) 第${page}/${total}页\n${body}`;
+                if (page < total) out += `\n.welcome list ${page + 1} 查看下一页`;
+                this.sendReply(out);
             } else if (sub === 'clear') {
                 this.globalWelcome = [];
                 this.markDirty();
@@ -2807,7 +2812,7 @@ const mainHandlers = {
                     if (msg.cmd === 'onlineSet') {
                         if (msg.channel === channel) finish(null, msg.users || []);
                         else finish(`locked -> ${msg.channel}`, null);
-                    } else if (msg.cmd === 'warn' && msg.text === 'Nickname taken') {
+                    } else if (msg.cmd === 'warn' && /nickname\s+taken/i.test(msg.text || '')) {
                         baseNick = 'list_' + Math.floor(1000 + Math.random() * 9000);
                         nick = password ? `${baseNick}#${password}` : baseNick;
                         ws.send(JSON.stringify({ cmd: 'join', channel, nick }));
@@ -2892,7 +2897,7 @@ const mainHandlers = {
                             ws.send(JSON.stringify({ cmd: 'chat', text }));
                             finish(null, count);
                         } else finish(`locked -> ${msg.channel}`, null);
-                    } else if (msg.cmd === 'warn' && msg.text === 'Nickname taken') {
+                    } else if (msg.cmd === 'warn' && /nickname\s+taken/i.test(msg.text || '')) {
                         nick = 'send_' + Math.floor(1000 + Math.random() * 9000);
                         ws.send(JSON.stringify({ cmd: 'join', channel, nick }));
                     } else if (msg.cmd === 'warn' && /locked|lock/i.test(msg.text || '')) {
@@ -3024,7 +3029,7 @@ const mainHandlers = {
     pushMotd() {
         if (this.serverModWarn('setmotd')) return;
         this.sendWSMessage({ cmd: 'setmotd', motd: this.buildMotd() }, true, true);
-        if (this.opHint) this.sendChat('频道公告已推送');
+        this.sendChat('频道公告已推送');
     },
 
     serverModWarn(cmdName) {
@@ -3175,7 +3180,7 @@ const mainHandlers = {
                 }
                 this.whitelist.add(trip);
                 this.markDirty();
-                if (this.opHint) this.sendReply(`已添加白名单: ${trip}`);
+                this.sendReply(`已添加白名单: ${trip}`);
             } else if (sub === 'del') {
                 const trip = params[1];
                 if (!trip) {
@@ -3184,7 +3189,7 @@ const mainHandlers = {
                 }
                 if (this.whitelist.delete(trip)) {
                     this.markDirty();
-                    if (this.opHint) this.sendReply(`已删除白名单: ${trip}`);
+                    this.sendReply(`已删除白名单: ${trip}`);
                 } else {
                     this.sendReply(`未找到 ${trip}`);
                 }
@@ -3199,25 +3204,63 @@ const mainHandlers = {
         }
     },
 
+    handleForce(msg, params) {
+        try {
+            const sub = (params[0] || '').toLowerCase();
+            const val = params.slice(1).join(' ').trim();
+            if (!sub || !val || (sub !== 'color' && sub !== 'flair')) {
+                this.sendReply('格式: ;force color <十六进制>|flair <文字>');
+                return;
+            }
+            const botNick = CONFIG.botNick;
+            if (this.serverModWarn('force')) return;
+            if (sub === 'color') {
+                const color = val.replace(/^#/, '');
+                if (!/^[0-9a-fA-F]{6}$/.test(color)) {
+                    this.sendReply('颜色需为十六进制');
+                    return;
+                }
+                this.sendChat(`/forcecolor ${botNick} ${color}`, true);
+            } else {
+                const chars = Array.from(val);
+                if (chars.length > 4) {
+                    this.sendReply('后缀最多4个字符');
+                    return;
+                }
+                const reserved = { '🌟': 9999999, '⭐': 999999, '👑': 99999, '💫': 9999 };
+                if (Object.prototype.hasOwnProperty.call(reserved, val)
+                    && typeof this.botLevel === 'number'
+                    && reserved[val] !== this.botLevel) {
+                    this.sendReply('该后缀为保留后缀，需匹配当前等级');
+                    return;
+                }
+                this.sendChat(`/forceflair ${botNick} ${val}`, true);
+            }
+            this.sendReply('设置成功');
+        } catch (err) {
+            this.sendReply('设置失败');
+        }
+    },
+
     handleLog(msg, params) {
         try {
             const sub = (params[0] || '').toLowerCase();
             if (sub === 'off') {
                 this.logEnabled = false;
                 this.markDirty();
-                if (this.opHint) this.sendReply('Log recording off');
+                this.sendReply('已关闭日志');
                 return;
             }
             if (sub === 'on') {
                 this.logEnabled = true;
                 this.markDirty();
-                if (this.opHint) this.sendReply('Log recording on');
+                this.sendReply('已开启日志');
                 return;
             }
             if (sub === 'clear') {
                 this.adminLogs = [];
                 this.markDirty();
-                if (this.opHint) this.sendReply('Log cleared');
+                this.sendReply('已清空日志');
                 return;
             }
             const count = parseInt(params[0]) || 10;
@@ -3240,11 +3283,9 @@ const mainHandlers = {
             const action = params[0]?.toLowerCase();
             if (action === 'on') {
                 this.modMode = true;
-                this.markDirty();
                 this.sendReply('已开启协管功能');
             } else if (action === 'off') {
                 this.modMode = false;
-                this.markDirty();
                 this.sendReply('已关闭协管功能');
             } else {
                 this.sendReply('格式: .mod on|off');
@@ -3267,7 +3308,7 @@ const mainHandlers = {
             }
             this.modList.add(trip);
             this.markDirty();
-            if (this.opHint) this.sendReply(`已添加Mod: ${trip}`);
+            this.sendReply(`已添加Mod: ${trip}`);
             this.addAdminLog('addmod', trip, msg.trip);
         } catch (err) {
             this.sendReply('添加Mod失败');
@@ -3283,7 +3324,7 @@ const mainHandlers = {
             }
             if (this.modList.delete(trip)) {
                 this.markDirty();
-                if (this.opHint) this.sendReply(`已删除Mod: ${trip}`);
+                this.sendReply(`已删除Mod: ${trip}`);
                 this.addAdminLog('delmod', trip, msg.trip);
             } else {
                 this.sendReply(`未找到 ${trip}`);
@@ -3953,11 +3994,11 @@ const mainHandlers = {
             } else if (sub === 'on') {
                 this.historyEnabled = true;
                 this.markDirty();
-                if (this.opHint) this.sendReply('聊天记录记录已开启');
+                this.sendReply('聊天记录记录已开启');
             } else if (sub === 'off') {
                 this.historyEnabled = false;
                 this.markDirty();
-                if (this.opHint) this.sendReply('聊天记录记录已关闭');
+                this.sendReply('聊天记录记录已关闭');
             } else {
                 this.sendReply('格式: .history [无参数=导出]|list|remove|clear|keep|auto|on|off');
             }
@@ -4123,7 +4164,7 @@ const mainHandlers = {
                 case 'ifauto':
                     if (val === 'on' || val === 'off') {
                         this.ifAuto = val === 'on';
-                        this.sendReply(`.if 空触发定时发言已${this.ifAuto ? '开启' : '关闭'}`);
+                        this.sendReply(`if 空触发定时发言已${this.ifAuto ? '开启' : '关闭'}`);
                     } else this.sendReply('ifauto 需为 on|off');
                     break;
                 case 'afk':
@@ -4252,7 +4293,7 @@ const mainHandlers = {
                 this.stopCloneClient(nick, trip);
                 this.clones.splice(idx, 1);
                 this.markDirty();
-                if (this.opHint) this.sendReply(`已删除分身 ${nick}`);
+                this.sendReply(`已删除分身 ${nick}`);
                 return;
             }
             if (sub === 'clear') {
@@ -4260,7 +4301,7 @@ const mainHandlers = {
                 this.cloneClients.clear();
                 this.clones = [];
                 this.markDirty();
-                if (this.opHint) this.sendReply('已清空所有分身');
+                this.sendReply('已清空所有分身');
                 return;
             }
             let args = params.slice();
@@ -4294,11 +4335,9 @@ const mainHandlers = {
             this.markDirty();
             this.startCloneClient(nick, trip, channel, expiresAt);
             const nickInfo = nick;
-            if (this.opHint) {
-                this.sendReply(minutes > 0
-                    ? `已添加分身 ${nickInfo} -> ${channel} (${minutes}分钟后过期)`
-                    : `已添加分身 ${nickInfo} -> ${channel}`);
-            }
+            this.sendReply(minutes > 0
+                ? `已添加分身 ${nickInfo} -> ${channel} (${minutes}分钟后过期)`
+                : `已添加分身 ${nickInfo} -> ${channel}`);
         } catch (err) {
             this.sendReply('操作失败');
         }
@@ -4591,7 +4630,7 @@ const mainHandlers = {
             }
             if (pub.length) this.sendChat(pub.join('\n'));
             if (priv.length) this.sendWhisper(msg.nick, priv.join('\n'));
-            if (!pub.length && !priv.length) this.sendChat('(无输出)');
+            if (!pub.length && !priv.length) this.sendChat('无输出');
         } catch (err) {
             this.sendReply('执行失败');
         }
@@ -4657,13 +4696,13 @@ const mainHandlers = {
             if (!isEscaped && sub === 'on') {
                 this.replyEnabled = true;
                 this.markDirty();
-                if (this.opHint) this.sendReply('Reply on');
+                this.sendReply('Reply on');
                 return;
             }
             if (!isEscaped && sub === 'off') {
                 this.replyEnabled = false;
                 this.markDirty();
-                if (this.opHint) this.sendReply('Reply off');
+                this.sendReply('Reply off');
                 return;
             }
             if (!isEscaped && (sub === 'add' || sub === 'addz')) {
@@ -4694,7 +4733,7 @@ const mainHandlers = {
                     this.replyRules.push({ id: Date.now(), pattern, isRegex, replies: [replyText] });
                 }
                 this.markDirty();
-                if (this.opHint) this.sendReply(`已添加: [${pattern}] -> [${replyText}]`);
+                this.sendReply(`已添加: [${pattern}] -> [${replyText}]`);
                 return;
             }
             if (!isEscaped && sub === 'remove') {
@@ -4711,7 +4750,7 @@ const mainHandlers = {
                     if (from >= 1 && to <= this.replyRules.length) {
                         const removed = this.replyRules.splice(from - 1, to - from + 1);
                         this.markDirty();
-                        if (this.opHint) this.sendReply(`已移除 ${removed.length} 条回复规则`);
+                        this.sendReply(`已移除 ${removed.length} 条回复规则`);
                         return;
                     }
                 }
@@ -4719,7 +4758,7 @@ const mainHandlers = {
                 if (!isNaN(num) && num >= 1 && num <= this.replyRules.length) {
                     const removed = this.replyRules.splice(num - 1, 1)[0];
                     this.markDirty();
-                    if (this.opHint) this.sendReply(`已移除: [${removed.pattern}]`);
+                    this.sendReply(`已移除: [${removed.pattern}]`);
                 } else {
                     const keyword = params.slice(1).join(' ').replace(/\\+/g, '');
                     const found = this.replyRules.findIndex(r =>
@@ -4728,7 +4767,7 @@ const mainHandlers = {
                     if (found !== -1) {
                         const removed = this.replyRules.splice(found, 1)[0];
                         this.markDirty();
-                        if (this.opHint) this.sendReply(`已移除: [${removed.pattern}]`);
+                        this.sendReply(`已移除: [${removed.pattern}]`);
                     } else {
                         this.sendReply('未找到匹配的回复规则');
                     }
@@ -4758,7 +4797,7 @@ const mainHandlers = {
             if (!isEscaped && sub === 'clear') {
                 this.replyRules = [];
                 this.markDirty();
-                if (this.opHint) this.sendReply('已清空回复规则');
+                this.sendReply('已清空回复规则');
                 return;
             }
             if (!isEscaped && params.length >= 2 && /^-?\d+(\.\d+)?$/.test(params[0]) && /^-?\d+(\.\d+)?$/.test(params[1])) {
@@ -4771,7 +4810,7 @@ const mainHandlers = {
                 this.replyProb = prob;
                 this.replyDelay = delay;
                 this.markDirty();
-                if (this.opHint) this.sendReply(`Reply prob=${prob}% delay=${delay}s`);
+                this.sendReply(`Reply prob=${prob}% delay=${delay}s`);
                 return;
             }
             const question = first.replace(/\\+/g, '');
@@ -4808,8 +4847,7 @@ const mainHandlers = {
             if (!this.hourlyAds) this.hourlyAds = { enabled: true, hours: {}, ads: {} };
             const arg = params[0];
             if (!arg) {
-                const list = Object.entries(this.hourlyAds.hours || {}).map(([h, t]) => `${h}点: ${t}${(this.hourlyAds.ads || {})[h] ? `\n  广告: ${this.hourlyAds.ads[h]}` : ''}`);
-                this.sendReply(`定点报时广告: ${this.hourlyAds.enabled ? '开' : '关'}${list.length ? '\n' + list.join('\n') : '\n默认文案: x点了'}`);
+                this.sendReply(`定点报时广告: ${this.hourlyAds.enabled ? '开' : '关'}`);
                 return;
             }
             if (arg === 'on') {
@@ -4824,54 +4862,43 @@ const mainHandlers = {
                 this.sendReply('定点报时广告已关闭');
                 return;
             }
+            const raw = this.getRawArgs(msg).replace(/\\n/g, '\n');
+            const afterArg = raw.trim().slice(arg.length).replace(/^[ \t]+/, '');
+            const isSet = params[1] === 'set';
+            const content = (isSet ? afterArg.replace(/^set\b[ \t]*/, '') : afterArg).trim();
             if (arg === 'all') {
-                const isSet = params[1] === 'set';
-                const content = (isSet ? params.slice(2).join(' ') : params.slice(1).join(' ')).trim();
                 if (!content) {
                     const target = isSet ? this.hourlyAds.ads : this.hourlyAds.hours;
                     for (const h of Object.keys(target)) delete target[h];
                     this.markDirty();
-                    this.sendReply(`已清除所有整点${isSet ? '广告' : '报时'}`);
+                    this.sendReply('已清除所有定点报时广告');
                     return;
                 }
-                if (isSet) {
-                    for (let h = 0; h < 24; h++) this.hourlyAds.ads[h] = content;
-                    this.markDirty();
-                    this.sendReply(`已设置所有整点广告: ${content}`);
-                } else {
-                    for (let h = 0; h < 24; h++) this.hourlyAds.hours[h] = content;
-                    this.markDirty();
-                    this.sendReply(`已设置所有整点报时: ${content}`);
-                }
+                const target = isSet ? this.hourlyAds.ads : this.hourlyAds.hours;
+                for (let h = 0; h < 24; h++) target[h] = content;
+                this.markDirty();
+                this.sendReply('已设置所有定点报时广告');
                 return;
             }
             const hour = parseInt(arg);
             if (isNaN(hour) || hour < 0 || hour > 23) {
-                this.sendReply('格式: .ads on|off|<0-23> <内容>|all <内容>');
+                this.sendReply('格式: .ads on|off|<0-23> [set] <内容>|all [set] <内容>');
                 return;
             }
-            const isSet = params[1] === 'set';
-            const content = (isSet ? params.slice(2).join(' ') : params.slice(1).join(' ')).trim();
+            const target = isSet ? this.hourlyAds.ads : this.hourlyAds.hours;
             if (!content) {
-                const target = isSet ? this.hourlyAds.ads : this.hourlyAds.hours;
                 if (target[hour] !== undefined) {
                     delete target[hour];
                     this.markDirty();
-                    this.sendReply(`已清除 ${hour} 点的${isSet ? '广告' : '报时'}`);
+                    this.sendReply(`已清除 ${hour} 点定点报时广告`);
                 } else {
-                    this.sendReply(`${hour} 点未设置${isSet ? '广告' : '报时'}`);
+                    this.sendReply(`${hour} 点未设置定点报时广告`);
                 }
                 return;
             }
-            if (isSet) {
-                this.hourlyAds.ads[hour] = content;
-                this.markDirty();
-                this.sendReply(`已设置 ${hour} 点的广告: ${content}`);
-            } else {
-                this.hourlyAds.hours[hour] = content;
-                this.markDirty();
-                this.sendReply(`已设置 ${hour} 点的报时: ${content}`);
-            }
+            target[hour] = content;
+            this.markDirty();
+            this.sendReply(`已设置 ${hour} 点定点报时广告`);
         } catch (err) {
             this.sendReply('操作失败');
         }
