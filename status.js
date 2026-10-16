@@ -572,7 +572,7 @@ const bot = {
             welcome: { enabled: this.welcomeEnabled, messages: Object.fromEntries(this.welcomeMessages), global: this.globalWelcome },
             lastseen: Object.fromEntries(this.lastSeen),
             banwords: this.banWords,
-            mods: { list: [...this.modList], mode: this.modMode },
+            mods: { list: [...this.modList], mode: false },
             announce: this.scheduledAnnouncements,
             random: { enabled: this.randomEnabled, prob: this.randomProb },
             ratelimit: {
@@ -653,7 +653,7 @@ const bot = {
 
     loadAllData() {
         const read = (key, fallback) => store.get(key, fallback);
-        const mods = read('mods', null) || { list: [], mode: false };
+        const mods = read('mods', null) || { list: [] };
         this.ifRules = read('rules', []);
         const hashObj = read('hash', {});
         this.hashHistory = new Map(Object.entries(hashObj).map(([k, v]) => [k, new Set(v)]));
@@ -675,7 +675,7 @@ const bot = {
         }
         this.banWords = read('banwords', []);
         this.modList = new Set(mods.list || []);
-        this.modMode = !!mods.mode;
+        this.modMode = false;
         this.scheduledAnnouncements = read('announce', []).map(a => ({ ...a, lastSendTime: a.lastSendTime || 0 }));
         const random = read('random', null);
         if (random) {
@@ -880,7 +880,7 @@ const bot = {
             const parse = (k, fb) => {
                 try { return raw[k] !== undefined ? JSON.parse(raw[k]) : fb; } catch (e) { return fb; }
             };
-            const mods = { list: parse('bot_modList', []), mode: parse('bot_modMode', false) };
+            const mods = { list: parse('bot_modList', []), mode: false };
             store.setSync('rules', parse('bot_ifRules', []));
             store.setSync('hash', parse('bot_hashHistory', {}));
             store.setSync('welcome', parse('bot_welcomeMessages', {}));
