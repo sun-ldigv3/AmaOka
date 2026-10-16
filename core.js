@@ -187,7 +187,7 @@ module.exports = {
     handleWarn(msg) {
         const text = msg.text || '';
         console.log(`[WARN] ${text}`);
-        if (text === 'Nickname taken') {
+        if (/nickname\s+taken/i.test(text)) {
             if (!this._originalBotNick) this._originalBotNick = CONFIG.botNick;
             const baseNick = this._originalBotNick.split('_')[0];
             const newNick = baseNick + '_' + Math.random().toString(36).slice(2, 6);
@@ -340,7 +340,7 @@ class CloneClient {
             this.idleStrikes = 0;
             try {
                 const msg = JSON.parse(data.toString());
-                if (msg.cmd === 'warn' && msg.text === 'Nickname taken') {
+                if (msg.cmd === 'warn' && /nickname\s+taken/i.test(msg.text || '')) {
                     console.log(`[分身] ${this.loginNick} 昵称被占用`);
                     this.bot.sendChat(`分身 ${this.loginNick} 昵称被占用\nNickname taken`);
                 }
